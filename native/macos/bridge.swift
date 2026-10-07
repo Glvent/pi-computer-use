@@ -101,9 +101,37 @@ private struct CapturedWindowImage {
 	let frame: CGRect
 }
 
+// BEGIN PURE (compiled standalone by scripts/check-macos-native-pure.mjs; Foundation only)
+/// Modality of a root. An explicit `AXModal` answer is authoritative: Fusion's nonmodal BROWSER
+/// sidebar has subrole AXDialog but AXModal=0. Only when the app does not report `AXModal` at
+/// all does a dialog-like role/subrole count (legacy toolkits).
+func classifyModal(axModal: Bool?, sheetCount: Int, role: String, subrole: String) -> Bool {
+	if sheetCount > 0 || role == "AXSheet" { return true }
+	if let axModal { return axModal }
+	let text = "\(role) \(subrole)"
+	return text.range(of: "dialog", options: [.caseInsensitive]) != nil
+		|| text.range(of: "modal", options: [.caseInsensitive]) != nil
+}
+
+enum CaptureTarget: Equatable {
+	case capture(windowId: UInt32)
+	case semanticOnly
+	case notCapturable
+}
+
+/// Capture is allowed only for a real (positive) CG window id. A root with no pairing may still
+/// be observed semantically; a visual request fails rather than capturing some other window.
+func resolveCaptureTarget(windowId: UInt32?, wantsImage: Bool) -> CaptureTarget {
+	if let windowId, windowId > 0 { return wantsImage ? .capture(windowId: windowId) : .semanticOnly }
+	return wantsImage ? .notCapturable : .semanticOnly
+}
+// END PURE
+
 private struct LookRecord {
 	let lookId: String
 	let windowId: UInt32
+	/// Native root ref the look was taken from; the only identity for unpaired roots (windowId 0).
+	var windowRef: String? = nil
 	let windowFrame: CGRect
 	let imageWidth: Int
 	let imageHeight: Int
@@ -683,6 +711,12 @@ final class Bridge {
 		throw BridgeFailure(message: "Missing integer argument '\(key)'", code: "invalid_args")
 	}
 
+	/// `windowId` from the wire, treating 0 or negative as absent (unpaired roots have no CG window).
+	private func positiveWindowId(_ request: [String: Any]) -> UInt32? {
+		guard let value = optionalIntArg(request, "windowId"), value > 0 else { return nil }
+		return UInt32(value)
+	}
+
 	private func optionalIntArg(_ request: [String: Any], _ key: String) -> Int? {
 		if let value = request[key] as? Int {
 			return value
@@ -1090,7 +1124,7 @@ final class Bridge {
 
 	private func focusWindow(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
-		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
+		let windowId = positiveWindowId(request)
 		let windowRef = optionalStringArg(request, "windowRef")
 		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
 			return ["focused": false, "reason": "window_not_found"]
@@ -1136,11 +1170,8 @@ final class Bridge {
 		return "window"
 	}
 
-	private func isDialogLikeRoot(role: String, subrole: String) -> Bool {
-		let text = "\(role) \(subrole)"
-		return text.range(of: "dialog", options: [.caseInsensitive]) != nil
-			|| text.range(of: "modal", options: [.caseInsensitive]) != nil
-			|| text.range(of: "sheet", options: [.caseInsensitive]) != nil
+	private func isModalRoot(_ window: AXUIElement, role: String, subrole: String, sheetCount: Int) -> Bool {
+		classifyModal(axModal: boolAttribute(window, attribute: "AXModal" as CFString), sheetCount: sheetCount, role: role, subrole: subrole)
 	}
 
 	private func rootMetadata(pairing: WindowPairing, sheetCount: Int) -> [String: Any] {
@@ -1249,7 +1280,7 @@ final class Bridge {
 			let isMain = boolAttribute(window, attribute: kAXMainAttribute as CFString) ?? false
 			let isFocused = boolAttribute(window, attribute: kAXFocusedAttribute as CFString) ?? false
 			let sheetCount = sheetElements(of: window).count
-			let isModal = (boolAttribute(window, attribute: "AXModal" as CFString) ?? false) || sheetCount > 0 || isDialogLikeRoot(role: axRole, subrole: axSubrole)
+			let isModal = isModalRoot(window, role: axRole, subrole: axSubrole, sheetCount: sheetCount)
 			let scale = displayScaleFactor(for: effectiveFrame)
 
 			var item: [String: Any] = [
@@ -1308,7 +1339,7 @@ final class Bridge {
 	}
 
 	private func look(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
+		let windowId = positiveWindowId(request)
 		let windowRef = optionalStringArg(request, "windowRef")
 		let maxDimension = optionalIntArg(request, "maxDimension").map { max(1, $0) }
 		let readText = optionalStringArg(request, "readText") ?? "auto"
@@ -1323,6 +1354,9 @@ final class Bridge {
 		let isMenuRoot = requestedRole == "AXMenu" || (windowRef?.hasPrefix("cgmenu:") == true)
 		let captureStart = Date()
 		let shouldCapture = !isMenuRoot && (includeImage || readText == "always")
+		if resolveCaptureTarget(windowId: windowId, wantsImage: shouldCapture) == .notCapturable {
+			throw BridgeFailure(message: "Root has no capturable window (unpaired with any on-screen window); use semantic observation (image: never)", code: "root_not_capturable")
+		}
 		let capture = try shouldCapture ? windowId.map { try captureWindow(windowId: $0) } : nil
 		let captureMs = capture.map { _ in elapsedMs(captureStart) } ?? 0
 
@@ -1404,6 +1438,7 @@ final class Bridge {
 		storeLookRecord(LookRecord(
 			lookId: lookId,
 			windowId: windowId ?? baseRecord?.windowId ?? 0,
+			windowRef: windowRef ?? baseRecord?.windowRef,
 			windowFrame: baseRecord?.windowFrame ?? capture?.frame ?? rootFrame,
 			imageWidth: baseRecord?.imageWidth ?? imageWidth,
 			imageHeight: baseRecord?.imageHeight ?? imageHeight,
@@ -1423,7 +1458,7 @@ final class Bridge {
 				"kind": rootKind(role: role, subrole: subrole),
 				"framePoints": ["x": (capture?.frame ?? rootFrame).origin.x, "y": (capture?.frame ?? rootFrame).origin.y, "w": (capture?.frame ?? rootFrame).width, "h": (capture?.frame ?? rootFrame).height],
 				"scaleFactor": scale,
-				"isModal": (boolAttribute(window, attribute: "AXModal" as CFString) ?? false) || sheetCount > 0 || isDialogLikeRoot(role: role, subrole: subrole),
+				"isModal": isModalRoot(window, role: role, subrole: subrole, sheetCount: sheetCount),
 				"metadata": rootMetadata(pairing: pairing, sheetCount: sheetCount),
 				"role": role,
 				"subrole": subrole,
@@ -1818,9 +1853,9 @@ final class Bridge {
 		return ids
 	}
 
-	private func refindElement(ref: String, pid: Int32, windowId: UInt32) -> AXUIElement? {
+	private func refindElement(ref: String, pid: Int32, windowId: UInt32?, windowRef: String? = nil) -> AXUIElement? {
 		guard let snapshot = refStore.snapshot(for: ref),
-			let window = windowElement(pid: pid, windowId: windowId)
+			let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef)
 		else { return nil }
 		let targetCenter = CGPoint(x: snapshot.rect.midX, y: snapshot.rect.midY)
 		let candidates = collectDescendants(startingAt: window, maxDepth: 8).filter { candidate in
@@ -1884,7 +1919,7 @@ final class Bridge {
 		let beforeRootSnapshot = deferRootDelta ? [:] : rootMetadataSnapshot(pid: pid)
 		let beforeCgSignature = deferRootDelta ? [] : cgRootSignature(pid: pid)
 		let beforeFrontmostPid = deferRootDelta ? nil : NSWorkspace.shared.frontmostApplication?.processIdentifier
-		let beforeSheetCount = windowElement(pid: pid, windowId: record.windowId).map { sheetElements(of: $0).count } ?? 0
+		let beforeSheetCount = windowElement(pid: pid, windowId: record.windowId > 0 ? record.windowId : nil, windowRef: record.windowRef).map { sheetElements(of: $0).count } ?? 0
 		let beforeFocusedWindow = focusedWindowSummary(pid: pid)
 		let beforeValue: String?
 		let beforeSelected: String?
@@ -1904,7 +1939,7 @@ final class Bridge {
 				resolved = cached
 			} else {
 				refound = true
-				resolved = refindElement(ref: ref, pid: pid, windowId: record.windowId)
+				resolved = refindElement(ref: ref, pid: pid, windowId: record.windowId > 0 ? record.windowId : nil, windowRef: record.windowRef)
 			}
 			guard let stored = resolved else {
 				throw BridgeFailure(message: "Element reference is stale", code: "stale_ref")
@@ -1947,7 +1982,7 @@ final class Bridge {
 			if let app = NSRunningApplication(processIdentifier: pid), !app.isActive {
 				performed["activated"] = app.activate()
 			}
-			if let window = windowElement(pid: pid, windowId: record.windowId) {
+			if let window = windowElement(pid: pid, windowId: record.windowId > 0 ? record.windowId : nil, windowRef: record.windowRef) {
 				_ = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
 				_ = AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString, kCFBooleanTrue)
 				performed["raised"] = AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success
@@ -2009,7 +2044,7 @@ final class Bridge {
 
 		func refreshElement() -> AXUIElement? {
 			guard let ref = target["ref"] as? String,
-				let refreshed = refindElement(ref: ref, pid: pid, windowId: record.windowId)
+				let refreshed = refindElement(ref: ref, pid: pid, windowId: record.windowId > 0 ? record.windowId : nil, windowRef: record.windowRef)
 			else { return nil }
 			element = refreshed
 			performed["refound"] = true
@@ -2141,7 +2176,7 @@ final class Bridge {
 			try executeCoordinates(coordinatePoint())
 		}
 
-		let afterSheetCount = windowElement(pid: pid, windowId: record.windowId).map { sheetElements(of: $0).count } ?? beforeSheetCount
+		let afterSheetCount = windowElement(pid: pid, windowId: record.windowId > 0 ? record.windowId : nil, windowRef: record.windowRef).map { sheetElements(of: $0).count } ?? beforeSheetCount
 		let windowChanged = beforeFocusedWindow != focusedWindowSummary(pid: pid) || beforeSheetCount != afterSheetCount
 		var outcome = preflightCapsUnknown ? "unknown" : "unknown"
 		var evidence: [String: Any] = [:]
@@ -2307,7 +2342,7 @@ final class Bridge {
 	private func axWaitFor(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
 		ensureEnhancedAccessibility(pid: pid)
-		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
+		let windowId = positiveWindowId(request)
 		let windowRef = optionalStringArg(request, "windowRef")
 		let role = optionalStringArg(request, "role")?.trimmingCharacters(in: .whitespacesAndNewlines)
 		let text = optionalStringArg(request, "text")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -2474,7 +2509,8 @@ final class Bridge {
 		let windows = Array(axElementArray(appElement, attribute: kAXWindowsAttribute as CFString).prefix(128))
 		guard !windows.isEmpty else { return nil }
 		guard let windowId else {
-			return windows.first
+			// A requested ref that no longer resolves must fail, never fall back to another window.
+			return windowRef == nil ? windows.first : nil
 		}
 		let candidates = cgWindowCandidates(pid: pid)
 		let pairings = windowPairings(windows: windows, candidates: candidates)
