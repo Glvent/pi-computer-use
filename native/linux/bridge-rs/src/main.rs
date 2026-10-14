@@ -710,10 +710,12 @@ async fn read_text(state: &Arc<Mutex<HelperState>>, args: &Value) -> Result<Valu
             ErrorCode::SecureTextUnreadable,
         ));
     }
-    let text = AtspiClient::connect()
-        .await?
-        .read_text(&node.accessible)
-        .await?;
+    let text = if node.exposes_text() {
+        let client = AtspiClient::connect().await?;
+        client.read_text(&node.accessible).await?
+    } else {
+        String::new()
+    };
     let characters = text.chars().collect::<Vec<_>>();
     let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
     let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(4096) as usize;

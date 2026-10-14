@@ -85,6 +85,10 @@ impl NodeSnapshot {
         }
     }
 
+    pub fn exposes_text(&self) -> bool {
+        self.interfaces.contains(TEXT)
+    }
+
     pub fn searchable_text(&self) -> String {
         format!("{} {} {}", self.name, self.description, self.value).to_lowercase()
     }
@@ -592,6 +596,18 @@ mod tests {
         assert_eq!(fallback_application_pid(-1, Some(99)), 99);
         assert_eq!(fallback_application_pid(0, Some(0)), 0);
         assert_eq!(fallback_application_pid(0, None), 0);
+    }
+
+    #[test]
+    fn text_is_exposed_only_with_the_text_interface() {
+        let mut node = NodeSnapshot::minimal(AccessibleRef {
+            destination: ":1.3".into(),
+            path: "/display".into(),
+        });
+        node.interfaces.insert(ACTION.into());
+        assert!(!node.exposes_text());
+        node.interfaces.insert(TEXT.into());
+        assert!(node.exposes_text());
     }
 
     #[tokio::test]
