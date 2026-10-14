@@ -22,7 +22,7 @@ const COMPONENT: &str = "org.a11y.atspi.Component";
 const ACTION: &str = "org.a11y.atspi.Action";
 const MAX_ATSPI_ACTIONS: usize = 64;
 const EDITABLE_TEXT: &str = "org.a11y.atspi.EditableText";
-const TEXT: &str = "org.a11y.atspi.Text";
+pub const TEXT: &str = "org.a11y.atspi.Text";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AccessibleRef {
@@ -83,10 +83,6 @@ impl NodeSnapshot {
             is_secure: false,
             depth: 0,
         }
-    }
-
-    pub fn exposes_text(&self) -> bool {
-        self.interfaces.contains(TEXT)
     }
 
     pub fn searchable_text(&self) -> String {
@@ -596,18 +592,6 @@ mod tests {
         assert_eq!(fallback_application_pid(-1, Some(99)), 99);
         assert_eq!(fallback_application_pid(0, Some(0)), 0);
         assert_eq!(fallback_application_pid(0, None), 0);
-    }
-
-    #[test]
-    fn text_is_exposed_only_with_the_text_interface() {
-        let mut node = NodeSnapshot::minimal(AccessibleRef {
-            destination: ":1.3".into(),
-            path: "/display".into(),
-        });
-        node.interfaces.insert(ACTION.into());
-        assert!(!node.exposes_text());
-        node.interfaces.insert(TEXT.into());
-        assert!(node.exposes_text());
     }
 
     #[tokio::test]
