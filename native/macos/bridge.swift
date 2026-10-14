@@ -102,9 +102,6 @@ private struct CapturedWindowImage {
 }
 
 // BEGIN PURE (compiled standalone by scripts/check-macos-native-pure.mjs; Foundation only)
-/// Modality of a root. An explicit `AXModal` answer is authoritative: Fusion's nonmodal BROWSER
-/// sidebar has subrole AXDialog but AXModal=0. Only when the app does not report `AXModal` at
-/// all does a dialog-like role/subrole count (legacy toolkits).
 func classifyModal(axModal: Bool?, sheetCount: Int, role: String, subrole: String) -> Bool {
 	if sheetCount > 0 || role == "AXSheet" { return true }
 	if let axModal { return axModal }
@@ -119,8 +116,6 @@ enum CaptureTarget: Equatable {
 	case notCapturable
 }
 
-/// Capture is allowed only for a real (positive) CG window id. A root with no pairing may still
-/// be observed semantically; a visual request fails rather than capturing some other window.
 func resolveCaptureTarget(windowId: UInt32?, wantsImage: Bool) -> CaptureTarget {
 	if let windowId, windowId > 0 { return wantsImage ? .capture(windowId: windowId) : .semanticOnly }
 	return wantsImage ? .notCapturable : .semanticOnly
@@ -130,7 +125,6 @@ func resolveCaptureTarget(windowId: UInt32?, wantsImage: Bool) -> CaptureTarget 
 private struct LookRecord {
 	let lookId: String
 	let windowId: UInt32
-	/// Native root ref the look was taken from; the only identity for unpaired roots (windowId 0).
 	var windowRef: String? = nil
 	let windowFrame: CGRect
 	let imageWidth: Int
@@ -711,7 +705,6 @@ final class Bridge {
 		throw BridgeFailure(message: "Missing integer argument '\(key)'", code: "invalid_args")
 	}
 
-	/// `windowId` from the wire, treating 0 or negative as absent (unpaired roots have no CG window).
 	private func positiveWindowId(_ request: [String: Any]) -> UInt32? {
 		guard let value = optionalIntArg(request, "windowId"), value > 0 else { return nil }
 		return UInt32(value)
@@ -2509,7 +2502,6 @@ final class Bridge {
 		let windows = Array(axElementArray(appElement, attribute: kAXWindowsAttribute as CFString).prefix(128))
 		guard !windows.isEmpty else { return nil }
 		guard let windowId else {
-			// A requested ref that no longer resolves must fail, never fall back to another window.
 			return windowRef == nil ? windows.first : nil
 		}
 		let candidates = cgWindowCandidates(pid: pid)

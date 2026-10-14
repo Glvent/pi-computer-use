@@ -64,10 +64,6 @@ function parseRoots(result: unknown): PlatformRoot[] {
 	});
 }
 
-/**
- * Single wire spelling of a native root target: `windowId` only when positive, `windowRef` from
- * either `windowRef` or `rootRef`. Every macOS helper call routes its target through here.
- */
 export function normalizeTarget<T extends PlatformTarget>(target: T): Omit<T, "rootRef" | "windowRef" | "windowId"> & { windowId?: number; windowRef?: string } {
 	const { rootRef, windowRef, windowId, ...rest } = target;
 	const ref = windowRef ?? rootRef;

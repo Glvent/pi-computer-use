@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// Regression: native root identity must reach the macOS helper under one spelling.
 import assert from "node:assert/strict";
 
 const { macosHelper } = await import("../src/platform/macos/helper.ts");
@@ -19,31 +18,25 @@ async function lastLookArgs(target) {
 	return calls.find((call) => call.name === "look")?.args;
 }
 
-// Unpaired root: ref reaches the helper, windowId 0 never does.
 const unpaired = nativeWindowRequest({ pid: 7, windowId: 0, nativeWindowRef: "ax:dlg" });
 assert.deepEqual(unpaired, { pid: 7, rootRef: "ax:dlg", windowRef: "ax:dlg" });
 let args = await lastLookArgs(unpaired);
 assert.equal(args.windowRef, "ax:dlg");
 assert.equal("windowId" in args, false, "windowId 0 must not be sent");
 
-// Paired root sends both.
 args = await lastLookArgs(nativeWindowRequest({ pid: 7, windowId: 42, nativeWindowRef: "ax:main" }));
 assert.equal(args.windowId, 42);
 assert.equal(args.windowRef, "ax:main");
 
-// rootRef-only legacy callers still work.
 args = await lastLookArgs({ pid: 7, rootRef: "ax:legacy" });
 assert.equal(args.windowRef, "ax:legacy");
 
-// Paired without ref: id only.
 const idOnly = nativeWindowRequest({ pid: 7, windowId: 9, nativeWindowRef: undefined });
 assert.deepEqual(idOnly, { pid: 7, windowId: 9 });
 
-// Negative and NaN ids are dropped.
 assert.deepEqual(normalizeTarget({ pid: 1, windowId: -3 }), { pid: 1 });
 assert.deepEqual(normalizeTarget({ pid: 1, windowId: Number.NaN }), { pid: 1 });
 
-// waitFor and focusWindow agree with observe.
 calls.length = 0;
 await macosBackend.waitFor({ ...unpaired, gone: false, timeoutMs: 100, text: "x" });
 await macosBackend.focusWindow(unpaired);

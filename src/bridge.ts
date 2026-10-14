@@ -124,7 +124,6 @@ interface ComputerUseDetails {
 interface TerminalDesktopActionDetails {
 	tool: "act_ui";
 	status: "target_closed" | "post_action_observation_failed";
-	/** Why the source root is gone: `replaced` when new roots of the same pid appeared. */
 	cause?: "replaced" | "closed";
 	successors?: Array<{ ref?: string; kind: string; title?: string; isModal?: boolean }>;
 	baseStateId: string;
@@ -311,7 +310,6 @@ const runtimeState: RuntimeState = {
 };
 
 const savedStates = new SavedStates();
-/** Test seam: lets scripts run bridge internals inside an operation state. */
 export const testing = { runInOperation: <T>(fn: () => T): T => savedStates.operations.run({}, fn) };
 let resourceScheduler = new ResourceScheduler();
 
@@ -765,7 +763,6 @@ function toResolvedTarget(app: HelperApp, window: HelperWindow): ResolvedTarget 
 	return { ...baseTarget, windowRef: storeWindowRefForAppWindow(app, window).ref };
 }
 
-/** Platform target for a resolved root: `windowId` only when real (> 0), the native ref under both spellings. */
 export function nativeWindowRequest(target: Pick<CurrentTarget, "pid" | "windowId" | "nativeWindowRef">): { pid: number; windowId?: number; rootRef?: string; windowRef?: string } {
 	return {
 		pid: target.pid,
@@ -856,10 +853,6 @@ async function resolveTargetByWindowSelector(selector: RootSelector, signal?: Ab
 	return resolved;
 }
 
-/**
- * Re-resolve the current root. `preferModal` (observe) may move to a confirmed foreground modal; act
- * transactions pass `false` so actions and the successor capture stay on the root the state belongs to.
- */
 async function resolveCurrentTarget(signal?: AbortSignal, options: { preferModal?: boolean } = {}): Promise<ResolvedTarget> {
 	const current = currentTargetOrThrow();
 	const windows = await listWindows(current.pid, signal);
