@@ -568,19 +568,60 @@ mod tests {
         assert_eq!(relative_coordinate(355, 100), 255);
     }
 
-    #[test]
-    fn application_pid_uses_only_accessibility_bus_process_id() {
-        let source = include_str!("atspi.rs");
-        let implementation = source
-            .split("async fn application_pid(")
-            .nth(1)
-            .unwrap()
-            .split("pub async fn list_roots(")
-            .next()
-            .unwrap();
-        assert!(implementation.contains("GetConnectionUnixProcessID"));
-        assert!(!implementation.contains("org.a11y.atspi.Application"));
-        assert!(!implementation.contains("application_id"));
+    struct MockBus;
+
+    #[zbus::interface(name = "org.freedesktop.DBus")]
+    impl MockBus {
+        #[zbus(name = "GetConnectionUnixProcessID")]
+        fn get_connection_unix_process_id(&self, name: &str) -> u32 {
+            assert_eq!(name, ":1.42");
+            25361
+        }
+    }
+
+    struct MockApplication;
+
+    #[zbus::interface(name = "org.a11y.atspi.Application")]
+    impl MockApplication {
+        #[zbus(property)]
+        fn id(&self) -> i32 {
+            8
+        }
+    }
+
+    #[tokio::test]
+    async fn application_pid_uses_only_accessibility_bus_process_id() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (server_socket, client_socket) = tokio::net::UnixStream::pair().unwrap();
+            let guid = zbus::Guid::generate();
+            let server = zbus::connection::Builder::unix_stream(server_socket)
+                .server(guid)
+                .unwrap()
+                .p2p()
+                .serve_at(DBUS_ROOT, MockBus)
+                .unwrap()
+                .serve_at(REGISTRY_ROOT, MockApplication)
+                .unwrap()
+                .build();
+            let client = zbus::connection::Builder::unix_stream(client_socket)
+                .p2p()
+                .build();
+            let (server, connection) = tokio::try_join!(server, client).unwrap();
+            let client = AtspiClient { connection };
+            let app = AccessibleRef {
+                destination: ":1.42".into(),
+                path: REGISTRY_ROOT.into(),
+            };
+            let application = client
+                .proxy(&app, "org.a11y.atspi.Application")
+                .await
+                .unwrap();
+            assert_eq!(application.get_property::<i32>("Id").await.unwrap(), 8);
+            assert_eq!(client.application_pid(&app).await, 25361);
+            drop(server);
+        })
+        .await
+        .expect("mock accessibility bus should respond promptly");
     }
 
     #[tokio::test]
