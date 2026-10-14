@@ -185,13 +185,6 @@ impl AtspiClient {
     }
 
     async fn application_pid(&self, accessible: &AccessibleRef) -> u64 {
-        let application_id = match self.proxy(accessible, "org.a11y.atspi.Application").await {
-            Ok(proxy) => proxy.get_property::<i32>("Id").await.unwrap_or(0),
-            Err(_) => 0,
-        };
-        if let Some(pid) = positive_application_pid(application_id) {
-            return pid;
-        }
         let Ok(bus) = Proxy::new(
             &self.connection,
             DBUS_DESTINATION,
@@ -209,7 +202,7 @@ impl AtspiClient {
             )
             .await
             .ok();
-        fallback_application_pid(application_id, connection_pid)
+        connection_pid.map(u64::from).unwrap_or(0)
     }
 
     pub async fn list_roots(
@@ -524,16 +517,6 @@ fn relative_coordinate(value: i32, origin: i32) -> i32 {
     value.saturating_sub(origin)
 }
 
-fn positive_application_pid(application_id: i32) -> Option<u64> {
-    u64::try_from(application_id).ok().filter(|pid| *pid > 0)
-}
-
-fn fallback_application_pid(application_id: i32, connection_pid: Option<u32>) -> u64 {
-    positive_application_pid(application_id)
-        .or_else(|| connection_pid.filter(|pid| *pid > 0).map(u64::from))
-        .unwrap_or(0)
-}
-
 fn unavailable(error: impl std::fmt::Display) -> ProtocolError {
     ProtocolError::new(
         format!("AT-SPI2 is unavailable: {error}"),
@@ -586,12 +569,18 @@ mod tests {
     }
 
     #[test]
-    fn application_pid_prefers_positive_atspi_id_then_bus_fallback() {
-        assert_eq!(fallback_application_pid(42, Some(99)), 42);
-        assert_eq!(fallback_application_pid(0, Some(99)), 99);
-        assert_eq!(fallback_application_pid(-1, Some(99)), 99);
-        assert_eq!(fallback_application_pid(0, Some(0)), 0);
-        assert_eq!(fallback_application_pid(0, None), 0);
+    fn application_pid_uses_only_accessibility_bus_process_id() {
+        let source = include_str!("atspi.rs");
+        let implementation = source
+            .split("async fn application_pid(")
+            .nth(1)
+            .unwrap()
+            .split("pub async fn list_roots(")
+            .next()
+            .unwrap();
+        assert!(implementation.contains("GetConnectionUnixProcessID"));
+        assert!(!implementation.contains("org.a11y.atspi.Application"));
+        assert!(!implementation.contains("application_id"));
     }
 
     #[tokio::test]
