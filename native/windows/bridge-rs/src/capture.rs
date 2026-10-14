@@ -101,9 +101,9 @@ fn is_effectively_blank_bgra(bits: &[u8]) -> bool {
     let mut sampled = 0usize;
     let mut buckets: HashMap<(u8, u8, u8), usize> = HashMap::new();
 
-    for pixel in bits.chunks_exact(4).step_by(97) {
+    for [blue, green, red, _] in bits.as_chunks::<4>().0.iter().step_by(97) {
         sampled += 1;
-        let bucket = (pixel[0] >> 3, pixel[1] >> 3, pixel[2] >> 3);
+        let bucket = (blue >> 3, green >> 3, red >> 3);
         *buckets.entry(bucket).or_default() += 1;
     }
 
@@ -293,9 +293,9 @@ unsafe fn gdi_capture_to_base64(
         DIB_RGB_COLORS,
     );
 
-    // PrintWindow can report success while returning a nearly uniform black,
-    // white, or gray bitmap for GPU surfaces (Chromium/Electron). Fall back to
-    // compositor-visible pixels when the result carries no useful detail.
+    // PrintWindow frequently returns a successful but black bitmap for GPU
+    // surfaces (Chromium/Electron). Fall back to the compositor-visible screen
+    // pixels only when the semantic capture failed or is effectively blank.
     let print_window_blank = is_effectively_blank_bgra(&bits);
     if !pw_ok.as_bool() || dib_ok == 0 || print_window_blank {
         let screen_dc = GetDC(HWND(std::ptr::null_mut()));
@@ -400,8 +400,8 @@ mod unit_tests {
 
     #[test]
     fn detects_uniform_failed_compositor_captures() {
-        let black = vec![0, 0, 0, 255].repeat(10_000);
-        let white = vec![231, 231, 231, 255].repeat(10_000);
+        let black = [0, 0, 0, 255].repeat(10_000);
+        let white = [231, 231, 231, 255].repeat(10_000);
         let mut almost_uniform = white.clone();
         for offset in (0..almost_uniform.len()).step_by(4).take(200) {
             almost_uniform[offset..offset + 3].copy_from_slice(&[40, 120, 200]);
