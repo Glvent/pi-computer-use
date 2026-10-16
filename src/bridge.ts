@@ -11,7 +11,7 @@ import { cdpClickForContext, cdpDragForContext, cdpEvaluateForContext, cdpKeypre
 import { getComputerUseConfig, isBrowserUseEnabled, isHeadlessMode, loadComputerUseConfig } from "./config.ts";
 import { normalizeFindParams } from "./find-params.ts";
 import { noteAfterAct, noteFromLook, noteRegionKeyForRef, renderNote, type WindowNote } from "./note.ts";
-import { controlLine, foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, rankedTextMatch, renderInteractiveControls, restoreOutline, searchOutline, searchOutlineRanked, serializeOutline, serializeOutlineNodeShallow, serializeOutlineSearchMatch, type LookResponse, type Outline, type OutlineChange, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode, type SerializedOutlineSearchMatch } from "./outline.ts";
+import { controlLine, foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, rankedTextMatch, renderInteractiveControls, restoreOutline, searchOutline, searchOutlineRanked, serializeOutline, serializeOutlineNodeShallow, serializeOutlineSearchMatch, type LookResponse, type Outline, type OutlineChange, type OutlineDiff, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode, type SerializedOutlineSearchMatch } from "./outline.ts";
 import { applyOutputEnvelope, boundToolError, clearStoredOutputs, readStoredOutput, UI_TEXT_PAGE_CHARS } from "./output.ts";
 import { AGENT_TOOL_NAMES, type ActParams, type EvaluateBrowserParams, type ExpandUiParams, type ImageMode, type InspectUiParams, type LaunchBrowserParams, type FindParams, type NavigateBrowserParams, type ObserveDetail, type ObserveParams, type ObserveTargetParams, type ReadTextParams, type RootSelector, type SearchUiParams, type UiAction, type WaitForParams } from "./contract.ts";
 import { toFiniteNumber } from "./platform/coerce.ts";
@@ -312,7 +312,7 @@ const runtimeState: RuntimeState = {
 };
 
 const savedStates = new SavedStates();
-export const testing = { runInOperation: <T>(fn: () => T): T => savedStates.operations.run({}, fn) };
+export const testing = { runInOperation: <T>(fn: () => T, state: OperationState = {}): T => savedStates.operations.run(state, fn), buildToolResult, browserObservationResult, waitForViewText, performSearchUi };
 let resourceScheduler = new ResourceScheduler();
 
 function operationState(): OperationState {
@@ -1531,6 +1531,10 @@ function conditionScopeNode(outline: Outline, condition: ReturnType<typeof valid
 	return scopeNode;
 }
 
+function waitForViewText(outline: Outline, stateId: string, transition: OutlineDiff): string {
+	return transition.useFullView ? renderStateView(outline, stateId, "compact").text : `${renderChanges(transition.changes) || "(no element changes)"}\nUse stateId ${stateId} for subsequent actions and queries.`;
+}
+
 async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Promise<AgentToolResult<WaitForDetails>> {
 	const contextId = operationState().contextId;
 	const condition = validateCondition(params);
@@ -1554,8 +1558,7 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 			const renderedOutline = foldToBudget(successorOutline).text;
 			const details: WaitForDetails = { tool: "wait_for", stateId: lastSnapshot.snapshotId, baseStateId: baseSnapshot.snapshotId, view: useDiff ? "diff" : "full", changes: useDiff ? transition.changes : undefined, found, gone: found && gone || undefined, timedOut, nodeCount: lastSnapshot.targets.length, text, role, value, scopeRef, outline: lastSnapshot.outline, renderedOutline };
 			const message = found ? (gone ? "Condition disappeared." : "Condition appeared.") : `Timed out after ${timeoutMs}ms waiting for condition.`;
-			const viewText = useDiff ? `${renderChanges(transition.changes) || "(no element changes)"}\nUse stateId ${lastSnapshot.snapshotId} for subsequent actions and queries.` : renderStateView(successorOutline, lastSnapshot.snapshotId, "compact").text;
-			return { content: [{ type: "text", text: `${message}\n${viewText}` }], details };
+			return { content: [{ type: "text", text: `${message}\n${waitForViewText(successorOutline, lastSnapshot.snapshotId, transition)}` }], details };
 		};
 		do {
 			const scheduled = await resourceScheduler.read(state.resourceKey, async () => await cdpSnapshotForContext(contextId));
@@ -1610,8 +1613,7 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 		renderedOutline: foldToBudget(refreshed.outline).text,
 	};
 	const message = details.found ? (details.gone ? "Condition disappeared." : "Condition appeared.") : `Timed out after ${timeoutMs}ms waiting for condition.`;
-	const viewText = useDiff ? `${renderChanges(transition.changes) || "(no element changes)"}\nUse stateId ${refreshed.capture.stateId} for subsequent actions and queries.` : renderStateView(refreshed.outline, refreshed.capture.stateId, "compact").text;
-	return { content: [{ type: "text", text: `${message}\n${viewText}` }], details };
+	return { content: [{ type: "text", text: `${message}\n${waitForViewText(refreshed.outline, refreshed.capture.stateId, transition)}` }], details };
 }
 
 function sameRootIdentity(a: CurrentTarget, b: CurrentTarget): boolean {
