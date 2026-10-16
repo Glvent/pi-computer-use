@@ -233,7 +233,7 @@ check("INV-17 macOS agent cursor stays native, configurable, and background-only
 });
 
 check("INV-17b macOS activity glow is configurable, headless-safe, and connection-owned", () => {
-	assert(configTs.includes("activity_glow: boolean") && configTs.includes("activity_glow: true") && configTs.includes("PI_COMPUTER_USE_ACTIVITY_GLOW"), "activity glow config or default is incomplete");
+	assert(configTs.includes("activity_glow: boolean") && configTs.includes("activity_glow: false") && configTs.includes("PI_COMPUTER_USE_ACTIVITY_GLOW"), "activity glow config or default is incomplete");
 	assert(extensionTs.includes('pi.on("tool_execution_start"') && extensionTs.includes('pi.on("agent_end"'), "extension does not track computer-use activity lifecycle");
 	assert(extensionTs.includes("config.headless") && extensionTs.includes("config.activity_glow"), "activity glow is not configurable or headless-safe");
 	assert(macosHelperTs.includes("class MacosActivityGlowConnection") && macosHelperTs.includes('cmd: "setActivityGlow"'), "activity glow does not use a persistent helper connection");

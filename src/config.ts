@@ -27,7 +27,7 @@ const DEFAULT_CONFIG: ComputerUseConfig = {
 	browser_use: true,
 	headless: false,
 	cursor_overlay: true,
-	activity_glow: true,
+	activity_glow: false,
 	managed_browser: "chrome",
 };
 

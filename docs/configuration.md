@@ -62,7 +62,7 @@ When `true`, macOS pointer actions enqueue a click-through agent cursor animatio
 
 ### `activity_glow`
 
-Default: `true`
+Default: `false`
 
 When `true`, macOS displays a click-through pulsing border on every screen while a Pi agent is using one of the extension's tools. The border stays visible until the agent run ends. Each Pi session owns its indicator state, so one session cannot hide another session's active indicator. The helper removes a session's state if its connection closes unexpectedly.
 
