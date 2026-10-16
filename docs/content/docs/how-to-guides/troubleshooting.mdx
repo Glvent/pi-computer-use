@@ -82,10 +82,10 @@ Confirm that:
 
 The helper captures with ScreenCaptureKit first and then tries `/usr/sbin/screencapture` for the same window ID. A successful permission readiness check does not guarantee that either method can capture every later window ([capture reference](../reference/platforms/macos/capture.mdx)).
 
-If the target is ambiguous, find its root explicitly before observing:
+If the target is ambiguous, find the exact root by app and window title, then observe it:
 
 ```ts
-find_roots({ app: "TextEdit", query: "Untitled" })
+find_roots({ app: "TextEdit", text: "Untitled" })
 observe_ui({ root: "@r1" })
 ```
 
