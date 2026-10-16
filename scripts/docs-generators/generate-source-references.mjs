@@ -42,7 +42,7 @@ function applyDerivedFacts(page, body, source) {
 	if (page.key === "reference/configuration") {
 		const defaultsBlock = source.match(/const DEFAULT_CONFIG[^=]*=\s*\{([\s\S]*?)\};/)?.[1];
 		if (!defaultsBlock) throw new Error(`${page.key}: cannot extract DEFAULT_CONFIG`);
-		for (const name of ["browser_use", "managed_browser", "headless", "cursor_overlay"]) {
+		for (const name of ["browser_use", "managed_browser", "headless", "cursor_overlay", "activity_glow"]) {
 			const value = defaultsBlock.match(new RegExp(`\\b${name}\\s*:\\s*(true|false|"[^"]*")`))?.[1];
 			if (!value) throw new Error(`${page.key}: cannot extract default for ${name}`);
 			body = body.replaceAll(`{{config-default:${name}}}`, value);

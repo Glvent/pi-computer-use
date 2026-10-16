@@ -17,7 +17,7 @@
       "title": "Configuration",
       "description": "Configuration files, options, environment variables, and browser support reference.",
       "sourcePath": "src/config.ts",
-      "requiredSymbols": ["DEFAULT_CONFIG", "browser_use", "headless", "cursor_overlay"]
+      "requiredSymbols": ["DEFAULT_CONFIG", "browser_use", "headless", "cursor_overlay", "activity_glow"]
     },
     {
       "key": "reference/platforms/macos/accessibility",

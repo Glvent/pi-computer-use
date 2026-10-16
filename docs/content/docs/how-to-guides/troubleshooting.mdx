@@ -91,7 +91,7 @@ observe_ui({ root: "@r1" })
 
 ## Handle strict headless rejection
 
-`headless: true` permits only Accessibility actions on macOS. It rejects coordinate targeting and synthesized pointer or keyboard delivery rather than activating an app or posting events.
+`headless: true` permits only Accessibility actions on macOS. Coordinate targeting, Accessibility fallbacks that would need synthesized pointer input, every `typeText` and `keypress`, and web text replacement fail with `foreground_required` before the helper activates an app or posts events. The bridge does not retry them in the foreground.
 
 Use a current semantic ref when the target exposes the required action. If the workflow genuinely needs synthesized events, run that action without strict headless mode and let the checked fallback policy decide whether foreground delivery is allowed.
 

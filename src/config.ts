@@ -6,6 +6,7 @@ export interface ComputerUseConfig {
 	browser_use: boolean;
 	headless: boolean;
 	cursor_overlay: boolean;
+	activity_glow: boolean;
 	managed_browser: "helium" | "chrome";
 }
 
@@ -26,6 +27,7 @@ const DEFAULT_CONFIG: ComputerUseConfig = {
 	browser_use: true,
 	headless: false,
 	cursor_overlay: true,
+	activity_glow: false,
 	managed_browser: "chrome",
 };
 
@@ -49,9 +51,11 @@ function normalizePartial(raw: unknown): Partial<ComputerUseConfig> {
 	const browserUse = parseBoolean((source as any).browser_use);
 	const headless = parseBoolean((source as any).headless);
 	const cursorOverlay = parseBoolean((source as any).cursor_overlay);
+	const activityGlow = parseBoolean((source as any).activity_glow);
 	if (browserUse !== undefined) out.browser_use = browserUse;
 	if (headless !== undefined) out.headless = headless;
 	if (cursorOverlay !== undefined) out.cursor_overlay = cursorOverlay;
+	if (activityGlow !== undefined) out.activity_glow = activityGlow;
 	const managedBrowser = (source as any).managed_browser;
 	if (managedBrowser === "helium" || managedBrowser === "chrome") out.managed_browser = managedBrowser;
 	return out;
@@ -72,9 +76,11 @@ function readEnv(): Partial<ComputerUseConfig> {
 	const browserUse = parseBoolean(process.env.PI_COMPUTER_USE_BROWSER_USE);
 	const headless = parseBoolean(process.env.PI_COMPUTER_USE_HEADLESS);
 	const cursorOverlay = parseBoolean(process.env.PI_COMPUTER_USE_CURSOR_OVERLAY);
+	const activityGlow = parseBoolean(process.env.PI_COMPUTER_USE_ACTIVITY_GLOW);
 	if (browserUse !== undefined) out.browser_use = browserUse;
 	if (headless !== undefined) out.headless = headless;
 	if (cursorOverlay !== undefined) out.cursor_overlay = cursorOverlay;
+	if (activityGlow !== undefined) out.activity_glow = activityGlow;
 	const managedBrowser = process.env.PI_COMPUTER_USE_MANAGED_BROWSER;
 	if (managedBrowser === "helium" || managedBrowser === "chrome") out.managed_browser = managedBrowser;
 	return out;
@@ -115,7 +121,7 @@ export function isBrowserUseEnabled(): boolean {
 /*
 PI_DOCS_REFERENCE_BEGIN reference/configuration
 
-Configuration controls browser access, strict accessibility execution, and the macOS agent cursor.
+Configuration controls browser access, strict accessibility execution, the macOS agent cursor, and the macOS activity glow.
 
 ## Files
 
@@ -140,7 +146,8 @@ Example:
   "browser_use": true,
   "managed_browser": "chrome",
   "headless": false,
-  "cursor_overlay": true
+  "cursor_overlay": true,
+  "activity_glow": true
 }
 ```
 
@@ -166,13 +173,21 @@ Selects `"helium"` or `"chrome"` for `launch_browser`. The debugging port is alw
 
 Default: `{{config-default:headless}}`
 
-When `true`, actions must remain in the background. Raw pointer events, raw keyboard events, foreground focus fallback, cursor takeover, and the agent cursor overlay are blocked. When `false` (the default), Pi prefers verified semantic activation when it is credible, preserves the focus established by editable clicks for dependent keyboard input, and may retry keyboard input in the foreground when a background attempt conclusively produced no value change. Ambiguous pointer actions are never replayed blindly.
+When `true`, actions must remain in the background. Raw pointer events, raw keyboard events, foreground focus fallback, cursor takeover, the agent cursor overlay, and the activity glow are blocked. On macOS, actions that would need synthesized pointer or keyboard input, including every `typeText` and `keypress`, fail with `foreground_required` ([macOS reference](./platforms/macos/actions.mdx#headless-policy)). When `false` (the default), Pi prefers verified semantic activation when it is credible, preserves the focus established by editable clicks for dependent keyboard input, and may retry keyboard input in the foreground when a background attempt conclusively produced no value change. Ambiguous pointer actions are never replayed blindly.
 
 ### `cursor_overlay`
 
 Default: `{{config-default:cursor_overlay}}`
 
 When `true`, macOS pointer actions enqueue a click-through agent cursor animation to the native grounded point during non-headless background delivery. Foreground actions that control the physical cursor don't display the overlay. The overlay doesn't move the system pointer, accept input, or delay the action. Set it to `false` for invisible automation. `headless: true` always suppresses it regardless of this setting ([macOS reference](./platforms/macos/actions.mdx#agent-cursor-overlay)).
+
+### `activity_glow`
+
+Default: `{{config-default:activity_glow}}`
+
+When `true`, macOS displays a click-through pulsing border on every screen while a Pi agent is using one of the extension's tools. The border stays visible until the agent run ends. Each Pi session owns its indicator state, so one session cannot hide another session's active indicator. The helper removes a session's state if its connection closes unexpectedly.
+
+The activity glow appears in user screen recordings, but never in the agent's own observations: helper captures always target a single window, so screen-edge overlays are not included. The glow is excluded from accessibility discovery. Other platforms ignore this setting, and `headless: true` always suppresses it ([macOS reference](./platforms/macos/implementation.mdx#activity-glow)).
 
 ## Environment variables
 
@@ -187,6 +202,8 @@ PI_COMPUTER_USE_HEADLESS=0
 PI_COMPUTER_USE_HEADLESS=1
 PI_COMPUTER_USE_CURSOR_OVERLAY=0
 PI_COMPUTER_USE_CURSOR_OVERLAY=1
+PI_COMPUTER_USE_ACTIVITY_GLOW=0
+PI_COMPUTER_USE_ACTIVITY_GLOW=1
 PI_COMPUTER_USE_DELIVERY_POLICY=default
 PI_COMPUTER_USE_DELIVERY_POLICY=foreground
 PI_COMPUTER_USE_CDP_PORT=9222
