@@ -55,13 +55,16 @@ const controlsRoot = tree(passive("@e1", "AXWindow", { title: "Doc" }), [
 	node("@e10", "Line1\nLine2"),
 	tree(passive("@e11", "AXSheet"), [node("@e12", "OK")]),
 ]);
-const controlsNodes = [];
-const collect = (current) => {
-	controlsNodes.push(current);
-	for (const child of current.children) collect(child);
+const outlineFrom = (rootNode) => {
+	const nodes = [];
+	const collect = (current) => {
+		nodes.push(current);
+		for (const child of current.children) collect(child);
+	};
+	collect(rootNode);
+	return { lookId: "look", root: rootNode, nodes, refToWireRef: new Map(), wireRefToRef: new Map() };
 };
-collect(controlsRoot);
-const controlsOutline = { lookId: "look", root: controlsRoot, nodes: controlsNodes, refToWireRef: new Map(), wireRefToRef: new Map() };
+const controlsOutline = outlineFrom(controlsRoot);
 const controls = renderInteractiveControls(controlsOutline);
 assert.deepEqual(controls.renderedRefs, ["@e9", "@e12", "@e5", "@e10"], "compact view must list sheet/focused controls first and drop containers, tooltips, text, pictureOnly, unlabeled and duplicate controls");
 assert.equal(controls.omittedUnlabeled, 1);
@@ -79,6 +82,15 @@ const cappedControls = renderInteractiveControls(controlsOutline, 2);
 assert.equal(cappedControls.truncated, true);
 assert.deepEqual(cappedControls.renderedRefs, ["@e9", "@e12"]);
 assert.match(cappedControls.text.split("\n").at(-1), /2 more controls not shown/);
+const nestedRoot = tree(passive("@e20", "AXWindow", { title: "Doc" }), [
+	tree(passive("@e21", "AXGroup"), [node("@e22", "Plain"), tree(passive("@e23", "AXDialog"), [node("@e24", "Confirm")]), node("@e25", "Later")]),
+	node("@e26", "Outside"),
+	node("@e27", "Typed", "AXTextField"),
+]);
+nestedRoot.children[2].focused = true;
+const nestedOutline = outlineFrom(nestedRoot);
+assert.deepEqual(renderInteractiveControls(nestedOutline).renderedRefs, ["@e27", "@e24", "@e22", "@e25", "@e26"], "only dialog controls are promoted, not siblings sharing an ancestor with the dialog");
+assert.deepEqual(renderInteractiveControls(nestedOutline, 1).renderedRefs, ["@e27"], "the focused control survives the control cap");
 clearStoredOutputs();
 
 console.log("Bounded output, ranked search, and compact controls checks passed.");

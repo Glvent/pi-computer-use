@@ -186,7 +186,7 @@ check("INV-11 unified agent contract", () => {
 check("INV-11a compact observe view", () => {
 	const extension = fs.readFileSync(path.join(root, "extensions/computer-use.ts"), "utf8");
 	assert(extension.includes('detail: Type.Optional(Type.Union([Type.Literal("compact"), Type.Literal("outline")]'), "observe_ui does not declare detail compact|outline");
-	assert(ts.includes("function renderStateView") && (ts.match(/renderStateView\(/g) ?? []).length >= 5, "full views do not route through renderStateView");
+	assert(ts.includes("function renderStateView") && (ts.match(/renderStateView\(/g) ?? []).length >= 4 && (ts.match(/waitForViewText\(/g) ?? []).length >= 3, "full views do not route through renderStateView");
 	assert(/`Controls \([^`]*stateId \$\{stateId\}, root \$\{outline\.root\.ref\}/.test(ts), "controls header does not show stateId and root ref");
 });
 

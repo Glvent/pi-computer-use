@@ -361,16 +361,15 @@ function pathRefs(node: OutlineNode): string[] {
 	return refs;
 }
 
+function defaultUnfoldAnchors(outline: Outline): OutlineNode[] {
+	return outline.nodes.filter((node) => node.truncated || node.focused || node.parent?.role === "AXSheet" || node.role === "AXSheet" || node.role === "AXDialog");
+}
+
 function defaultUnfoldRefs(outline: Outline): Set<string> {
 	const refs = new Set<string>([outline.root.ref]);
-	for (const node of outline.nodes) {
-		if (node.truncated || node.parent?.role === "AXSheet" || node.role === "AXSheet" || node.role === "AXDialog") {
-			for (const ref of pathRefs(node)) refs.add(ref);
-		}
-		if (node.focused) {
-			for (const ref of pathRefs(node)) refs.add(ref);
-			for (const child of node.children) refs.add(child.ref);
-		}
+	for (const node of defaultUnfoldAnchors(outline)) {
+		for (const ref of pathRefs(node)) refs.add(ref);
+		if (node.focused) for (const child of node.children) refs.add(child.ref);
 	}
 	return refs;
 }
@@ -435,24 +434,20 @@ function closestListedLabel(node: OutlineNode, listed: Set<OutlineNode>): string
 }
 
 export function renderInteractiveControls(outline: Outline, maxControls = DEFAULT_BUDGET.maxNodes): ControlsResult {
-	const priority = defaultUnfoldRefs(outline);
-	priority.delete(outline.root.ref);
+	const anchors = new Set(defaultUnfoldAnchors(outline));
+	const insideAnchor = (node: OutlineNode): boolean => anchors.has(node) || (node.parent !== undefined && insideAnchor(node.parent));
 	const listed = new Set<OutlineNode>();
-	const prioritized: OutlineNode[] = [];
-	const remaining: OutlineNode[] = [];
 	let omittedUnlabeled = 0;
 	const visit = (node: OutlineNode) => {
 		const label = outlineNodeLabel(node);
 		const control = isInteractiveControl(node);
 		if (control && !label && !node.isTextInput && !node.focused) omittedUnlabeled += 1;
-		else if (node.focused || (control && label !== closestListedLabel(node, listed))) {
-			listed.add(node);
-			(pathRefs(node).some((ref) => priority.has(ref)) ? prioritized : remaining).push(node);
-		}
+		else if (node.focused || (control && label !== closestListedLabel(node, listed))) listed.add(node);
 		for (const child of node.children) visit(child);
 	};
 	visit(outline.root);
-	const controls = [...prioritized, ...remaining];
+	const rank = new Map([...listed].map((node) => [node, node.focused ? 0 : insideAnchor(node) ? 1 : 2]));
+	const controls = [...listed].sort((a, b) => rank.get(a)! - rank.get(b)!);
 	const shown = controls.slice(0, maxControls);
 	const lines = shown.map(controlLine);
 	const truncated = shown.length < controls.length;
