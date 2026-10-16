@@ -27,7 +27,7 @@ Find a target root before observe_ui when needed.
 
 ## `observe_ui`
 
-Capture the current/frontmost root or one exact @r root and return a bounded UI outline.
+Capture the current/frontmost root or one exact @r root and return a compact list of actionable @e controls plus stateId.
 
 ### agent guidance
 
@@ -35,6 +35,7 @@ Primary UI observation tool. Follow with search_ui, expand_ui, inspect_ui, or ac
 
 - Use mode=semantic to skip OCR and images, visual to force them, and fused for automatic selection.
 - Use @e outline refs from observe_ui/search_ui for act_ui; pictureOnly refs are coordinate-only and blocked by UI-tree-only policy.
+- Use search_ui for unlisted controls; expand_ui on the root ref or detail=outline for structure.
 
 ### parameters
 
@@ -42,6 +43,7 @@ Primary UI observation tool. Follow with search_ui, expand_ui, inspect_ui, or ac
 | --- | --- | --- | --- |
 | `root` | `string` | no | Exact @r ref issued by find_roots |
 | `mode` | `semantic` \| `visual` \| `fused` | no | Observation mode, default fused |
+| `detail` | `compact` \| `outline` | no | compact (default) lists actionable refs; outline returns the folded tree |
 
 ## `search_ui`
 
@@ -62,7 +64,7 @@ Find targets not shown in the compact observe_ui output; refine broad searches i
 
 ## `expand_ui`
 
-Unfold bounded local outline context for one @e ref.
+Unfold bounded local outline context for one @e ref; use the root ref for full structure.
 
 ### agent guidance
 
