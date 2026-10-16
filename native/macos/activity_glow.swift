@@ -99,10 +99,9 @@ final class ActivityGlowController: NSObject {
 		} else {
 			activeClients.remove(clientID)
 		}
-		let shouldShow = !activeClients.isEmpty
 		stateLock.unlock()
 		DispatchQueue.main.async { [weak self] in
-			self?.setVisible(shouldShow)
+			self?.syncVisibility()
 		}
 	}
 
@@ -157,7 +156,8 @@ final class ActivityGlowController: NSObject {
 		return window
 	}
 
-	private func setVisible(_ shouldShow: Bool) {
+	private func syncVisibility() {
+		let shouldShow = isActive
 		guard visible != shouldShow else { return }
 		visible = shouldShow
 		if shouldShow {
