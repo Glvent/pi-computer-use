@@ -1,8 +1,7 @@
 import AppKit
 import QuartzCore
 
-// Matches the agent cursor bloom color (#FF7818) in agent_cursor.swift.
-private let activityGlowColor = NSColor(
+private let agentCursorBloomColor = NSColor(
 	calibratedRed: 1,
 	green: 0x78 / 255,
 	blue: 0x18 / 255,
@@ -19,9 +18,9 @@ private final class ActivityGlowView: NSView {
 		wantsLayer = true
 		layer?.masksToBounds = true
 
-		let strong = activityGlowColor.withAlphaComponent(0.72).cgColor
-		let soft = activityGlowColor.withAlphaComponent(0.22).cgColor
-		let clear = activityGlowColor.withAlphaComponent(0).cgColor
+		let strong = agentCursorBloomColor.withAlphaComponent(0.72).cgColor
+		let soft = agentCursorBloomColor.withAlphaComponent(0.22).cgColor
+		let clear = agentCursorBloomColor.withAlphaComponent(0).cgColor
 
 		for edge in edges {
 			edge.colors = [strong, soft, clear]
@@ -29,7 +28,7 @@ private final class ActivityGlowView: NSView {
 			layer?.addSublayer(edge)
 		}
 
-		border.borderColor = activityGlowColor.withAlphaComponent(0.9).cgColor
+		border.borderColor = agentCursorBloomColor.withAlphaComponent(0.9).cgColor
 		border.borderWidth = 2
 		layer?.addSublayer(border)
 
@@ -143,9 +142,6 @@ final class ActivityGlowController: NSObject {
 		window.hasShadow = false
 		window.ignoresMouseEvents = true
 		window.isReleasedWhenClosed = false
-		// Capturable so user screen recordings show the glow. The helper's own
-		// captures target a single window (SCContentFilter desktopIndependentWindow),
-		// so the glow never appears in the agent's observations.
 		window.sharingType = .readOnly
 		window.setAccessibilityElement(false)
 		window.level = .screenSaver
