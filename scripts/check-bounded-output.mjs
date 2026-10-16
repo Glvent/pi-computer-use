@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { applyOutputEnvelope, boundToolError, clearStoredOutputs, MODEL_TEXT_MAX_BYTES, readStoredOutput } from "../src/output.ts";
-import { searchOutlineRanked, serializeOutlineSearchMatch } from "../src/outline.ts";
+import { controlLine, renderInteractiveControls, searchOutlineRanked, serializeOutlineSearchMatch } from "../src/outline.ts";
 
 clearStoredOutputs();
 const oversized = "🙂".repeat(30_000);
@@ -35,6 +35,50 @@ assert.doesNotThrow(
 	() => JSON.stringify({ tool: "wait_for", target: serializedMatch }),
 	"successful wait_for details must be session-serializable",
 );
+
+const passive = (ref, role, fields = {}) => ({ ...node(ref, "", role), actions: [], canPress: false, ...fields });
+const tree = (parent, children) => {
+	parent.children = children;
+	for (const child of children) child.parent = parent;
+	return parent;
+};
+const field = passive("@e9", "AXTextField", { title: "Name", value: "Ada", canSetValue: true, isTextInput: true, focused: true });
+const controlsRoot = tree(passive("@e1", "AXWindow", { title: "Doc" }), [
+	tree(passive("@e2", "AXGroup", { actions: ["AXShowMenu"] }), [
+		passive("@e3", "AXStaticText", { title: "Hello" }),
+		node("@e4", ""),
+		tree(node("@e5", "Save"), [node("@e6", "Save")]),
+	]),
+	passive("@e7", "AXHelpTag", { title: "tip" }),
+	{ ...node("@e8", "Logo", "AXImage"), pictureOnly: true },
+	field,
+	node("@e10", "Line1\nLine2"),
+	tree(passive("@e11", "AXSheet"), [node("@e12", "OK")]),
+]);
+const controlsNodes = [];
+const collect = (current) => {
+	controlsNodes.push(current);
+	for (const child of current.children) collect(child);
+};
+collect(controlsRoot);
+const controlsOutline = { lookId: "look", root: controlsRoot, nodes: controlsNodes, refToWireRef: new Map(), wireRefToRef: new Map() };
+const controls = renderInteractiveControls(controlsOutline);
+assert.deepEqual(controls.renderedRefs, ["@e9", "@e12", "@e5", "@e10"], "compact view must list sheet/focused controls first and drop containers, tooltips, text, pictureOnly, unlabeled and duplicate controls");
+assert.equal(controls.omittedUnlabeled, 1);
+assert.equal(controls.controlCount, 4);
+assert.equal(controls.nodeCount, 12);
+assert.equal(controls.truncated, false);
+assert.equal(controls.text.split("\n").length, 4, "multi-line labels must stay on one line");
+assert.equal(controlLine(field), '@e9 textfield "Name" = "Ada" [focused]');
+assert.equal(controlLine({ ...field, title: "" }), '@e9 textfield "Ada" [focused]', "a value used as the label must not repeat");
+for (const line of controls.text.split("\n")) {
+	const [ref, role] = line.split(" ");
+	assert.ok(searchOutlineRanked(controlsOutline, undefined, role).matches.some((match) => match.ref === ref), `role ${role} must work as a search_ui filter`);
+}
+const cappedControls = renderInteractiveControls(controlsOutline, 2);
+assert.equal(cappedControls.truncated, true);
+assert.deepEqual(cappedControls.renderedRefs, ["@e9", "@e12"]);
+assert.match(cappedControls.text.split("\n").at(-1), /2 more controls not shown/);
 clearStoredOutputs();
 
-console.log("Bounded output and ranked search checks passed.");
+console.log("Bounded output, ranked search, and compact controls checks passed.");

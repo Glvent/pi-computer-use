@@ -123,6 +123,17 @@ export interface SerializedOutline {
 	root: SerializedOutlineNode;
 }
 
+export interface ControlsResult {
+	text: string;
+	renderedRefs: string[];
+	controlCount: number;
+	nodeCount: number;
+	omittedUnlabeled: number;
+	truncated: boolean;
+}
+
+export const INCIDENTAL_ACTIONS = new Set(["AXShowMenu", "AXScrollToVisible"]);
+
 const DEFAULT_BUDGET = { maxDepth: 2, maxNodes: 150 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -402,6 +413,51 @@ export function foldToBudget(outline: Outline, budget: Partial<typeof DEFAULT_BU
 		fullUnfoldLineCount: outline.nodes.length,
 		truncated,
 	};
+}
+
+export function isInteractiveControl(node: OutlineNode): boolean {
+	if (node.pictureOnly) return false;
+	return node.canPress || node.canSetValue || node.isTextInput || node.canIncrement || node.canDecrement || node.actions.some((action) => !INCIDENTAL_ACTIONS.has(action));
+}
+
+export function controlLine(node: OutlineNode): string {
+	const label = outlineNodeLabel(node);
+	const value = node.value && node.value !== label ? ` = ${JSON.stringify(node.value.length > 40 ? `${node.value.slice(0, 40)}…` : node.value)}` : "";
+	const states = [node.focused ? "focused" : undefined, node.offscreen ? "offscreen" : undefined].filter(Boolean);
+	return `${node.ref} ${roleName(node.role)} ${JSON.stringify(label)}${value}${states.length ? ` [${states.join(", ")}]` : ""}`;
+}
+
+function closestListedLabel(node: OutlineNode, listed: Set<OutlineNode>): string | undefined {
+	for (let current = node.parent; current; current = current.parent) {
+		if (listed.has(current)) return outlineNodeLabel(current);
+	}
+	return undefined;
+}
+
+export function renderInteractiveControls(outline: Outline, maxControls = DEFAULT_BUDGET.maxNodes): ControlsResult {
+	const priority = defaultUnfoldRefs(outline);
+	priority.delete(outline.root.ref);
+	const listed = new Set<OutlineNode>();
+	const prioritized: OutlineNode[] = [];
+	const remaining: OutlineNode[] = [];
+	let omittedUnlabeled = 0;
+	const visit = (node: OutlineNode) => {
+		const label = outlineNodeLabel(node);
+		const control = isInteractiveControl(node);
+		if (control && !label && !node.isTextInput && !node.focused) omittedUnlabeled += 1;
+		else if (node.focused || (control && label !== closestListedLabel(node, listed))) {
+			listed.add(node);
+			(pathRefs(node).some((ref) => priority.has(ref)) ? prioritized : remaining).push(node);
+		}
+		for (const child of node.children) visit(child);
+	};
+	visit(outline.root);
+	const controls = [...prioritized, ...remaining];
+	const shown = controls.slice(0, maxControls);
+	const lines = shown.map(controlLine);
+	const truncated = shown.length < controls.length;
+	if (truncated) lines.push(`… render budget reached: ${controls.length - shown.length} more controls not shown; use search_ui or expand_ui(@eN)`);
+	return { text: lines.join("\n"), renderedRefs: shown.map((node) => node.ref), controlCount: controls.length, nodeCount: outline.nodes.length, omittedUnlabeled, truncated };
 }
 
 function actionMatches(node: OutlineNode, action: string): boolean {
