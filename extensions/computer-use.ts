@@ -177,6 +177,7 @@ function formatConfigStatus(): string {
 		`browser_use: ${loaded.config.browser_use ? "enabled" : "disabled"}`,
 		`managed_browser: ${loaded.config.managed_browser}`,
 		`headless: ${loaded.config.headless ? "enabled" : "disabled"}`,
+		`background_only: ${loaded.config.background_only ? "enabled" : "disabled"}`,
 		`cursor_overlay: ${loaded.config.cursor_overlay ? "enabled" : "disabled"}`,
 		`activity_glow: ${loaded.config.activity_glow ? "enabled" : "disabled"}`,
 		"",
@@ -187,7 +188,7 @@ function formatConfigStatus(): string {
 }
 
 export default function computerUseExtension(pi: ExtensionAPI): void {
-	let activityGlowActive = false;
+	let agentRunActive = false;
 
 	for (const tool of COMPUTER_USE_TOOLS) pi.registerTool(tool);
 
@@ -208,19 +209,20 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 
 	pi.on("tool_execution_start", async (event) => {
 		const config = getComputerUseConfig();
-		if (process.platform !== "darwin" || config.headless || !config.activity_glow || !COMPUTER_USE_TOOL_NAMES.has(event.toolName)) return;
-		activityGlowActive = true;
+		// Sent even with glow and cursor off: the helper also releases synthetic focus when the run ends.
+		if (process.platform !== "darwin" || config.headless || !COMPUTER_USE_TOOL_NAMES.has(event.toolName)) return;
+		agentRunActive = true;
 		try { await setComputerUseActivity(true); } catch {}
 	});
 
 	pi.on("agent_end", async () => {
-		if (!activityGlowActive) return;
-		activityGlowActive = false;
+		if (!agentRunActive) return;
+		agentRunActive = false;
 		try { await setComputerUseActivity(false); } catch {}
 	});
 
 	pi.on("session_shutdown", async () => {
-		activityGlowActive = false;
+		agentRunActive = false;
 		try { await setComputerUseActivity(false); } catch {}
 		await shutdownComputerUseSession();
 	});

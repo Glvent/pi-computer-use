@@ -11,14 +11,21 @@ final class AgentCursorRenderer {
     private(set) var position = CGPoint(x: -200, y: -200)
     private(set) var heading: Double = .pi / 4
     private(set) var isAnimating = false
+    private(set) var label: String?
+    private(set) var pulseCenter = CGPoint.zero
+    /// Click ripple progress in 0..<1 while the ripple is visible.
+    private(set) var pulseProgress: Double?
 
+    private static let pulseDuration: CFTimeInterval = 0.55
+    private var pulsePending = false
+    private var pulseStartedAt: CFTimeInterval?
     private var path: PlannedPath?
     private var spring: Spring?
     private var distanceSoFar: Double = 0
     private var lastFrameTime: CFTimeInterval?
     private var springTarget: (point: CGPoint, heading: Double)?
 
-    func moveTo(point clickPoint: CGPoint) {
+    func moveTo(point clickPoint: CGPoint, label: String? = nil, pulse: Bool = false) {
         let endAngle = Double.pi / 4
         let targetPoint = CGPoint(
             x: clickPoint.x + CGFloat(cos(endAngle) * 16),
@@ -32,6 +39,11 @@ final class AgentCursorRenderer {
         springTarget = nil
         distanceSoFar = 0
         lastFrameTime = nil
+        self.label = label
+        pulseCenter = clickPoint
+        pulsePending = pulse
+        pulseStartedAt = nil
+        pulseProgress = nil
         isAnimating = true
     }
 
@@ -46,6 +58,9 @@ final class AgentCursorRenderer {
         springTarget = nil
         distanceSoFar = 0
         lastFrameTime = nil
+        pulsePending = false
+        pulseStartedAt = nil
+        pulseProgress = nil
         isAnimating = false
     }
 
@@ -71,6 +86,10 @@ final class AgentCursorRenderer {
                     vy: sin(endState.heading) * speed * 0.8
                 )
                 springTarget = (path.targetPoint, path.endVisualHeading)
+                if pulsePending {
+                    pulsePending = false
+                    pulseStartedAt = now
+                }
                 position = path.targetPoint
                 heading = path.endVisualHeading
                 self.path = nil
@@ -94,11 +113,24 @@ final class AgentCursorRenderer {
                 position = target.point
                 self.spring = nil
                 springTarget = nil
-                lastFrameTime = nil
-                isAnimating = false
             } else {
                 self.spring = spring
             }
+        }
+
+        if let pulseStartedAt {
+            let progress = (now - pulseStartedAt) / Self.pulseDuration
+            if progress >= 1 {
+                self.pulseStartedAt = nil
+                pulseProgress = nil
+            } else {
+                pulseProgress = max(0, progress)
+            }
+        }
+
+        if path == nil && spring == nil && pulseStartedAt == nil {
+            lastFrameTime = nil
+            isAnimating = false
         }
     }
 

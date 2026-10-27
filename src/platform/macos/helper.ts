@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { toBoolean, toFiniteNumber, toOptionalString } from "../coerce.ts";
 import type { PlatformDiagnostics } from "../types.ts";
+import { getComputerUseConfig } from "../../config.ts";
 import { resolveMacosHelperAppPath } from "./helper-path.mjs";
 
 const COMMAND_TIMEOUT_MS = 15_000;
@@ -382,7 +383,8 @@ class MacosActivityGlowConnection {
 			};
 			socket.on("data", onData);
 			socket.once("close", onClose);
-			socket.write(`${JSON.stringify({ id, cmd: "setActivityGlow", active })}\n`);
+			const config = getComputerUseConfig();
+			socket.write(`${JSON.stringify({ id, cmd: "setActivityGlow", active, glow: config.activity_glow, cursor: config.cursor_overlay })}\n`);
 		});
 	}
 }

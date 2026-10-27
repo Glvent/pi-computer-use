@@ -32,6 +32,39 @@ check(resolveCaptureTarget(windowId: nil, wantsImage: false) == .semanticOnly, "
 check(resolveCaptureTarget(windowId: nil, wantsImage: true) == .notCapturable, "unpaired visual errors")
 check(resolveCaptureTarget(windowId: 0, wantsImage: true) == .notCapturable, "window 0 never captured")
 
+check(syntheticFocusDecision(delivery: "pid", policy: "background_only", targetPid: 10, windowId: 7, frontmostPid: 20) == .apply, "background pid input to another app gets synthetic focus")
+check(syntheticFocusDecision(delivery: "pid", policy: "background", targetPid: 10, windowId: 7, frontmostPid: 20) == .apply, "default background attempt gets synthetic focus")
+check(syntheticFocusDecision(delivery: "pid", policy: "background_only", targetPid: 10, windowId: 7, frontmostPid: 10) == .skip("target_is_frontmost"), "frontmost target keeps the user's key window")
+check(syntheticFocusDecision(delivery: "hid", policy: "foreground", targetPid: 10, windowId: 7, frontmostPid: 20) == .skip("not_pid_delivery"), "foreground delivery needs no synthetic focus")
+check(syntheticFocusDecision(delivery: "pid", policy: "ax_only", targetPid: 10, windowId: 7, frontmostPid: 20) == .skip("not_pid_delivery"), "strict headless never posts records")
+check(syntheticFocusDecision(delivery: "pid", policy: "background_only", targetPid: 10, windowId: 0, frontmostPid: 20) == .skip("no_window"), "unpaired root has no window to make key")
+check(syntheticFocusDecision(delivery: "pid", policy: "background_only", targetPid: 10, windowId: 7, frontmostPid: nil) == .skip("frontmost_unknown"), "unknown frontmost app is not risked")
+check(syntheticFocusShouldDeactivate(target: SyntheticFocusTarget(pid: 10, windowId: 7), frontmostPid: 20), "background target is deactivated on release")
+check(!syntheticFocusShouldDeactivate(target: SyntheticFocusTarget(pid: 10, windowId: 7), frontmostPid: 10), "target the user brought forward keeps its focus")
+
+let records = syntheticFocusRecords(windowId: 0x01020304)
+check(records.count == 3 && records.allSatisfy { $0.count == 0xf8 && $0[0x04] == 0xf8 && Array($0[0x3c..<0x40]) == [0x04, 0x03, 0x02, 0x01] }, "records carry size and little-endian window id")
+check(records[0][0x08] == 0x0d && records[0][0x8a] == 0x01, "first record activates the application")
+check(records[1][0x08] == 0x01 && records[2][0x08] == 0x02 && records[1][0x3a] == 0x10 && records[1][0x20..<0x30].allSatisfy { $0 == 0xff }, "key-window records post both phases")
+check(keyWindowRecords(windowId: 0x01020304) == Array(records.dropFirst()), "focus restore reuses the key-window records without the activation record")
+let release = syntheticDeactivationRecord(windowId: 7)
+check(release[0x08] == 0x0d && release[0x8a] == 0x02 && release[0x3c] == 7, "release record deactivates the application")
+
+let relative = windowRelativeEventLocation(screenPoint: CGPoint(x: 192, y: 355), windowOrigin: CGPoint(x: 22, y: 53), mainDisplayHeight: 884)
+check(relative.x == 170 && relative.y == 582, "window event location flips against the main display so cgEvent yields (170, 302)")
+
+let armed = FocusGuardArm(targetPid: 10, userPid: 20, userWindowId: 5, armedAt: 100, until: nil)
+var tailing = armed
+tailing.until = 102
+check(focusStealVerdict(arm: armed, frontmostPid: 10, now: 101, lastUserMouseDownAt: 90, lastUserModifierChangeAt: 99) == .restore, "target activating mid-action is sent back")
+check(focusStealVerdict(arm: tailing, frontmostPid: 10, now: 101.5, lastUserMouseDownAt: nil, lastUserModifierChangeAt: nil) == .restore, "target activating just after the action is sent back")
+check(focusStealVerdict(arm: tailing, frontmostPid: 10, now: 102.5, lastUserMouseDownAt: nil, lastUserModifierChangeAt: nil) == .ignore("expired"), "activation after the tail is left alone")
+check(focusStealVerdict(arm: armed, frontmostPid: 10, now: 101, lastUserMouseDownAt: 100.5, lastUserModifierChangeAt: nil) == .ignore("user_input"), "a click since arming means the user switched")
+check(focusStealVerdict(arm: armed, frontmostPid: 10, now: 101, lastUserMouseDownAt: nil, lastUserModifierChangeAt: 100.7) == .ignore("user_input"), "Cmd-Tab to the target is the user's switch")
+check(focusStealVerdict(arm: armed, frontmostPid: 30, now: 101, lastUserMouseDownAt: nil, lastUserModifierChangeAt: nil) == .ignore("other_app"), "only the driven target counts as a steal")
+check(focusStealVerdict(arm: armed, frontmostPid: 20, now: 101, lastUserMouseDownAt: nil, lastUserModifierChangeAt: nil) == .ignore("user_app_front"), "user's app in front needs nothing")
+check(focusStealVerdict(arm: armed, frontmostPid: nil, now: 101, lastUserMouseDownAt: nil, lastUserModifierChangeAt: nil) == .ignore("user_app_front"), "unknown frontmost app is not acted on")
+
 if failures > 0 { exit(1) }
 print("macos native pure checks passed")
 `;

@@ -41,6 +41,22 @@ The bridge returns that error instead of retrying in the foreground. `ax_only` a
 
 Without strict headless mode, ref-based work normally starts in the background and can escalate only through checked fallback rules.
 
+## Background-only policy
+
+`background_only: true` maps the transaction to the native `background_only` policy. Synthesized pointer and keyboard input is always delivered with `postToPid`, including clicks into text fields and web content. The helper never activates or raises the target and never posts at the HID event tap, so the user's pointer and frontmost window are left alone. The bridge reports `didnt` and `foreground_required` outcomes instead of retrying in the foreground. Apps that ignore pid-targeted events even with synthetic focus can't be driven this way.
+
+## Synthetic focus
+
+AppKit drops pid-targeted clicks for windows that aren't key, and Chromium drops pid-targeted clicks and keystrokes too. Before pid-targeted input, the helper posts two WindowServer event records to the target process alone with the private SkyLight function `SLPSPostEventRecordTo`: "application activated" and "make key window" for the observed window. The target then treats that window as key while the user's frontmost app keeps real keyboard focus. Mouse events for a known window are built with [`NSEvent.mouseEvent`](https://developer.apple.com/documentation/appkit/nsevent/mouseevent(with:location:modifierflags:timestamp:windownumber:context:eventnumber:clickcount:pressure:)) carrying the window number and a window-relative location; screen-coordinate CGEvents posted to a background pid are ignored.
+
+Synthetic focus is skipped when the target is the frontmost app, since making another of its windows key would redirect the user's typing, and for `ax_only`. One helper serves every Pi session, so there is a single focus target, and focusing plus the action's input run under one lease that other connections' actions and releases wait for. Focus is released with an "application deactivated" record when the last registered agent run ends or its connection closes, or 10 seconds after the last focus when no run is registered, unless the user has brought the target forward since. The function is resolved at runtime; when it is missing, `performed.syntheticFocus` reports `synthetic_focus_unavailable` and delivery continues without it.
+
+## Focus-steal guard
+
+Background input can still make the target activate itself, for example a click that opens a window. For `background`, `background_only`, and `ax_only` actions whose target isn't frontmost, the helper watches app activations while the action runs and for 1.5 seconds after it. If the target comes to the front in that window, there was no hardware mouse click since the action began, and no hardware modifier key changed in the half second before, the helper brings back the app that was frontmost with the private SkyLight function `_SLPSSetFrontProcessWithOptions` and makes its front window key again, falling back to [`NSRunningApplication.activate()`](https://developer.apple.com/documentation/appkit/nsrunningapplication/activate()). Plain typing doesn't cancel the restore, because a steal does the most harm while the user is typing in their own app; a click, or a modifier change such as releasing Cmd after Cmd-Tab, is treated as the user switching apps on purpose. A switch made without either, such as Return in Spotlight, can be undone. Only the target counts, not other apps it opens. Foreground actions and `focusWindow` suspend the guard for their target while they run, from any session, and clear it when they finish. Ongoing checks rely on the main run loop of the `serve` daemon; in stdin mode only the action's own root-delta poll checks.
+
+Each steal is reported once as a root delta item with `change: "focusStolen"`, `kind: "app"`, the target's name and pid, `restored`, and `restoredTo`. A steal after the action returned appears in the next action's delta for that target. Keystrokes the user typed between the steal and the restore reach the target.
+
 ## Outcome evidence
 
 Native results distinguish:
@@ -53,7 +69,7 @@ Text writes and text entry can use read-back evidence. Pointer actions often nee
 
 ## Agent cursor overlay
 
-When `cursor_overlay` is enabled, non-headless pointer actions delivered in the background with `postToPid` schedule the noninteractive AppKit/SwiftUI agent cursor at the grounded point. Foreground actions that control the physical cursor don't display the overlay. The overlay ignores mouse events, cannot become key or main, and hides automatically. It is visual only and currently limited to the main display.
+When `cursor_overlay` is enabled, non-headless pointer, typing, and keypress actions delivered in the background with `postToPid` schedule the noninteractive AppKit/SwiftUI agent cursor at the grounded point. Foreground actions that control the physical cursor don't display the overlay. The overlay ignores mouse events and cannot become key or main. It stays parked for the whole agent run and hides shortly after the run ends, or eight seconds after the last action when no run is reported. It is visual only and draws on the display containing the grounded point, with a click ripple and an action label.
 
 For state ownership, batching, and successor observations, use the generated [agent state and action contract](../../agent/contract.mdx). For line-level implementation citations and every current limit, use the [complete macOS implementation reference](./implementation.mdx).
 

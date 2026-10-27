@@ -120,6 +120,106 @@ func resolveCaptureTarget(windowId: UInt32?, wantsImage: Bool) -> CaptureTarget 
 	if let windowId, windowId > 0 { return wantsImage ? .capture(windowId: windowId) : .semanticOnly }
 	return wantsImage ? .notCapturable : .semanticOnly
 }
+
+struct SyntheticFocusTarget: Equatable {
+	let pid: Int32
+	let windowId: UInt32
+}
+
+enum SyntheticFocusDecision: Equatable {
+	case apply
+	case skip(String)
+}
+
+/// Synthetic focus only serves pid-targeted input to a background app. A frontmost target
+/// already has real focus, and making another of its windows key would redirect the
+/// user's own typing.
+func syntheticFocusDecision(delivery: String, policy: String, targetPid: Int32, windowId: UInt32, frontmostPid: Int32?) -> SyntheticFocusDecision {
+	guard delivery == "pid", policy != "ax_only" else { return .skip("not_pid_delivery") }
+	guard windowId > 0 else { return .skip("no_window") }
+	guard let frontmostPid else { return .skip("frontmost_unknown") }
+	return frontmostPid == targetPid ? .skip("target_is_frontmost") : .apply
+}
+
+func syntheticFocusShouldDeactivate(target: SyntheticFocusTarget, frontmostPid: Int32?) -> Bool {
+	frontmostPid != target.pid
+}
+
+/// 0xf8-byte WindowServer event records, the layout yabai uses for focus without raise.
+/// Window id at 0x3c. AppKit-defined (0x0d) record: subtype at 0x8a, 1 = application
+/// activated, 2 = deactivated. Key-window record: 0x3a = 0x10, location bytes 0x20..<0x30
+/// set to 0xff, posted as phase 1 then phase 2 at 0x08.
+func syntheticFocusRecords(windowId: UInt32) -> [[UInt8]] {
+	[syntheticActivationRecord(windowId: windowId, subtype: 0x01)] + keyWindowRecords(windowId: windowId)
+}
+
+func keyWindowRecords(windowId: UInt32) -> [[UInt8]] {
+	var key = syntheticEventRecord(windowId: windowId)
+	key[0x3a] = 0x10
+	for index in 0x20..<0x30 { key[index] = 0xff }
+	var keyBegin = key
+	keyBegin[0x08] = 0x01
+	var keyEnd = key
+	keyEnd[0x08] = 0x02
+	return [keyBegin, keyEnd]
+}
+
+func syntheticDeactivationRecord(windowId: UInt32) -> [UInt8] {
+	syntheticActivationRecord(windowId: windowId, subtype: 0x02)
+}
+
+private func syntheticActivationRecord(windowId: UInt32, subtype: UInt8) -> [UInt8] {
+	var record = syntheticEventRecord(windowId: windowId)
+	record[0x08] = 0x0d
+	record[0x8a] = subtype
+	return record
+}
+
+private func syntheticEventRecord(windowId: UInt32) -> [UInt8] {
+	var record = [UInt8](repeating: 0, count: 0xf8)
+	record[0x04] = 0xf8
+	for (offset, byte) in withUnsafeBytes(of: windowId.littleEndian, Array.init).enumerated() { record[0x3c + offset] = byte }
+	return record
+}
+
+/// NSEvent location for a mouse event addressed to another process's window. Converted
+/// with `cgEvent`, it yields the point relative to the window's top-left corner, which is
+/// how the target routes window-numbered events to its views.
+func windowRelativeEventLocation(screenPoint: CGPoint, windowOrigin: CGPoint, mainDisplayHeight: CGFloat) -> CGPoint {
+	CGPoint(x: screenPoint.x - windowOrigin.x, y: mainDisplayHeight - (screenPoint.y - windowOrigin.y))
+}
+
+/// Guard state for one target while agent input to it is in flight or recently finished.
+/// `until` is nil while an action runs.
+struct FocusGuardArm: Equatable {
+	let targetPid: Int32
+	let userPid: Int32
+	let userWindowId: UInt32
+	let armedAt: TimeInterval
+	var until: TimeInterval?
+}
+
+enum FocusStealVerdict: Equatable {
+	case restore
+	case ignore(String)
+}
+
+/// Window before an activation in which a hardware modifier change (Cmd-Tab releases
+/// Cmd as it switches) marks the switch as the user's.
+let focusStealModifierWindow: TimeInterval = 0.5
+
+/// A target that comes to the front while the agent drives it in the background stole
+/// focus, unless the user switched: a hardware click since the guard was armed, or a
+/// modifier change just before the activation, as Cmd-Tab makes. Plain typing doesn't
+/// count, because the user typing in their own app is exactly when a steal does harm.
+func focusStealVerdict(arm: FocusGuardArm, frontmostPid: Int32?, now: TimeInterval, lastUserMouseDownAt: TimeInterval?, lastUserModifierChangeAt: TimeInterval?) -> FocusStealVerdict {
+	if let until = arm.until, now > until { return .ignore("expired") }
+	guard let frontmostPid, frontmostPid != arm.userPid else { return .ignore("user_app_front") }
+	guard frontmostPid == arm.targetPid else { return .ignore("other_app") }
+	if let lastUserMouseDownAt, lastUserMouseDownAt >= arm.armedAt { return .ignore("user_input") }
+	if let lastUserModifierChangeAt, now - lastUserModifierChangeAt <= focusStealModifierWindow { return .ignore("user_input") }
+	return .restore
+}
 // END PURE
 
 private struct LookRecord {
@@ -394,6 +494,9 @@ final class Bridge {
 	private let protocolVersion = 7
 	private let refStore = AXRefStore()
 	private let activityGlow = ActivityGlowController()
+	private let agentCursorHold = AgentCursorHoldController()
+	private let syntheticFocus = SyntheticFocusController()
+	private let focusGuard = FocusGuard()
 	private let inputSuppressionGuard = InputSuppressionGuard()
 	private let physicalInputLock = NSRecursiveLock()
 	private let supportsAgentCursor = CommandLine.arguments.contains("serve")
@@ -484,7 +587,11 @@ final class Bridge {
 
 	private func processClient(_ client: Int32) {
 		let clientID = UUID()
-		defer { activityGlow.disconnect(clientID) }
+		defer {
+			activityGlow.disconnect(clientID)
+			agentCursorHold.disconnect(clientID)
+			syntheticFocus.setRunActive(false, for: clientID)
+		}
 		let clientInput = FileHandle(fileDescriptor: client, closeOnDealloc: true)
 		var buffer = Data()
 		let newline = Data([0x0A])
@@ -635,7 +742,9 @@ final class Bridge {
 			guard let clientID, let active = boolArg(request, "active") else {
 				throw BridgeFailure(message: "Activity glow requires a connected client and boolean 'active' value", code: "invalid_args")
 			}
-			activityGlow.setActive(active, for: clientID)
+			activityGlow.setActive(active && (boolArg(request, "glow") ?? true), for: clientID)
+			if supportsAgentCursor { agentCursorHold.setActive(active && (boolArg(request, "cursor") ?? false), for: clientID) }
+			syntheticFocus.setRunActive(active, for: clientID)
 			return ["active": active]
 		case "shutdown":
 			// Reply first, then exit: the caller relaunches the helper to get a
@@ -795,6 +904,8 @@ final class Bridge {
 			"accessibility": permissions["accessibility"] ?? false,
 			"screenRecording": permissions["screenRecording"] ?? false,
 			"activityGlowActive": activityGlow.isActive,
+			"agentCursorHeld": agentCursorHold.isHeld,
+			"syntheticFocusAvailable": syntheticFocus.isAvailable,
 			"recentCompletedRequestIds": completedRequestIds(),
 		]
 		if let parentPath {
@@ -1127,6 +1238,8 @@ final class Bridge {
 
 	private func focusWindow(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
+		focusGuard.beginForeground(targetPid: pid)
+		defer { focusGuard.endForeground(targetPid: pid) }
 		let windowId = positiveWindowId(request)
 		let windowRef = optionalStringArg(request, "windowRef")
 		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
@@ -1910,7 +2023,7 @@ final class Bridge {
 		let params = request["params"] as? [String: Any] ?? [:]
 		let policy = optionalStringArg(request, "policy") ?? "default"
 		let deferRootDelta = boolArg(request, "deferRootDelta") ?? false
-		let delivery = policy == "background" ? "pid" : ((params["delivery"] as? String) == "pid" ? "pid" : "hid")
+		let delivery = policy == "background" || policy == "background_only" ? "pid" : ((params["delivery"] as? String) == "pid" ? "pid" : "hid")
 		var holdsPhysicalInput = false
 		func acquirePhysicalInputIfNeeded() {
 			if delivery == "hid" && !holdsPhysicalInput {
@@ -1919,6 +2032,15 @@ final class Bridge {
 			}
 		}
 		defer { if holdsPhysicalInput { physicalInputLock.unlock() } }
+		var holdsSyntheticInput = false
+		defer { if holdsSyntheticInput { syntheticFocus.endInput() } }
+		// Background and headless policies promise to leave the frontmost app alone; the
+		// foreground policy activates the target on purpose.
+		let guardsFocus = ["background", "background_only", "ax_only"].contains(policy) && focusGuard.beginAction(targetPid: pid)
+		defer { if guardsFocus { focusGuard.endAction(targetPid: pid) } }
+		let foregroundWork = policy == "foreground"
+		if foregroundWork { focusGuard.beginForeground(targetPid: pid) }
+		defer { if foregroundWork { focusGuard.endForeground(targetPid: pid) } }
 		func rejectInStrictHeadless(_ message: String) throws {
 			if policy == "ax_only" { throw BridgeFailure(message: message, code: "foreground_required") }
 		}
@@ -1979,14 +2101,27 @@ final class Bridge {
 			throw BridgeFailure(message: "No coordinate grounding is available", code: "coordinate_unavailable")
 		}
 
+		func cursorLabel() -> String? {
+			if action == "press" || action == "click" {
+				let count = (params["clickCount"] as? NSNumber)?.intValue ?? 1
+				let click = count >= 3 ? "triple click" : count == 2 ? "double click" : "click"
+				let button = params["button"] as? String ?? "left"
+				return button == "left" ? click : "\(button) \(click)"
+			}
+			if action == "keypress" { return (params["keys"] as? [String]).map { $0.joined(separator: "+") } }
+			return ["scroll": "scroll", "drag": "drag", "typeText": "type", "setText": "set text"][action]
+		}
+
 		func animateCursor(at point: CGPoint) {
 			guard supportsAgentCursor,
 				(request["cursorOverlay"] as? Bool ?? true),
 				delivery == "pid",
 				policy != "ax_only",
-				["press", "click", "moveMouse", "scroll", "drag"].contains(action)
+				["press", "click", "moveMouse", "scroll", "drag", "typeText", "setText", "keypress"].contains(action)
 			else { return }
-			Task { @MainActor in AgentCursor.shared.animate(to: point, above: record.windowId) }
+			let label = cursorLabel()
+			let pulse = action == "press" || action == "click"
+			Task { @MainActor in AgentCursor.shared.animate(to: point, above: record.windowId, label: label, pulse: pulse) }
 		}
 
 		func focusTargetForPhysicalInput() {
@@ -2000,6 +2135,29 @@ final class Bridge {
 				performed["raised"] = AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success
 			}
 			usleep(20_000)
+		}
+
+		// Runs before pid-targeted synthesized input and holds the input lease until the action
+		// returns. Failure is reported, not thrown: delivery then proceeds without synthetic focus.
+		func ensureSyntheticFocus() {
+			guard !holdsSyntheticInput else { return }
+			let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+			switch syntheticFocusDecision(delivery: delivery, policy: policy, targetPid: pid, windowId: record.windowId, frontmostPid: frontmostPid) {
+			case .skip(let reason):
+				performed["syntheticFocus"] = reason
+			case .apply:
+				do {
+					try syntheticFocus.beginInput(pid: pid, windowId: record.windowId, frontmostPid: frontmostPid)
+					holdsSyntheticInput = true
+					performed["syntheticFocus"] = "applied"
+					// The target handles the records on its main thread before it can accept input.
+					usleep(30_000)
+				} catch let failure as BridgeFailure {
+					performed["syntheticFocus"] = failure.code
+				} catch {
+					performed["syntheticFocus"] = "synthetic_focus_failed"
+				}
+			}
 		}
 
 		func preflight(_ point: CGPoint) throws {
@@ -2024,14 +2182,18 @@ final class Bridge {
 				throw BridgeFailure(message: "Coordinate grounding is unavailable for this outline-only root", code: "coordinate_unavailable_for_root")
 			}
 			performed["grounding"] = "coordinates"
-			if delivery == "pid" { performed["verification"] = "caller_required" }
+			if delivery == "pid" {
+				performed["verification"] = "caller_required"
+				ensureSyntheticFocus()
+			}
 			acquirePhysicalInputIfNeeded()
 			focusTargetForPhysicalInput()
 			if delivery == "hid" { try preflight(point) }
+			let targetWindowId = record.windowId > 0 ? record.windowId : nil
 			switch action {
 			case "press", "click":
 				animateCursor(at: point)
-				try postMouseClick(at: point, pid: pid, button: mouseButton(params["button"] as? String ?? "left"), clickCount: max(1, min(3, (params["clickCount"] as? NSNumber)?.intValue ?? 1)), delivery: delivery)
+				try postMouseClick(at: point, pid: pid, button: mouseButton(params["button"] as? String ?? "left"), clickCount: max(1, min(3, (params["clickCount"] as? NSNumber)?.intValue ?? 1)), delivery: delivery, windowId: targetWindowId)
 			case "moveMouse":
 				animateCursor(at: point)
 				try postMouseMove(to: point, pid: pid, delivery: delivery)
@@ -2049,7 +2211,7 @@ final class Bridge {
 					return lookPoint(record: record, x: x, y: y)
 				}
 				animateCursor(at: point)
-				try postMouseDrag(points: points, pid: pid, delivery: delivery)
+				try postMouseDrag(points: points, pid: pid, delivery: delivery, windowId: targetWindowId)
 			default:
 				throw BridgeFailure(message: "Action \(action) cannot use coordinate grounding", code: "invalid_args")
 			}
@@ -2069,7 +2231,7 @@ final class Bridge {
 			let textRoles: Set<String> = ["AXTextField", "AXTextArea", "AXTextView", "AXSearchField", "AXComboBox", "AXEditableText", "AXSecureTextField"]
 			let requiresPointerFocus = hasAncestorRole(element, role: "AXWebArea") || textRoles.contains(elementRole)
 			if requiresPointerFocus && policy != "ax_only" {
-				if policy == "foreground" {
+				if policy == "foreground" || policy == "background_only" {
 					try executeCoordinates(coordinatePoint())
 				} else {
 					throw BridgeFailure(message: "Web content requires pointer input", code: "foreground_required")
@@ -2094,8 +2256,10 @@ final class Bridge {
 			let text = params["text"] as? String ?? ""
 			if hasAncestorRole(element, role: "AXWebArea") {
 				try rejectInStrictHeadless("Web text replacement requires synthesized keyboard input, which strict headless mode prohibits")
+				if let point = try? coordinatePoint() { animateCursor(at: point) }
 				acquirePhysicalInputIfNeeded()
 				focusTargetForPhysicalInput()
+				if delivery == "pid" { ensureSyntheticFocus() }
 				_ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
 				let currentValue = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
 				var range = CFRange(location: 0, length: (currentValue as NSString).length)
@@ -2124,6 +2288,7 @@ final class Bridge {
 			if status == .success {
 				performed["grounding"] = "description"
 				performed["delivery"] = "ax"
+				if let point = try? coordinatePoint() { animateCursor(at: point) }
 				let value = stringAttribute(targetElement, attribute: kAXValueAttribute as CFString) ?? ""
 				if value != text && policy != "foreground" {
 					throw BridgeFailure(message: "The background accessibility value write was accepted but did not take effect", code: "foreground_required")
@@ -2134,6 +2299,7 @@ final class Bridge {
 		} else if action == "typeText" {
 			try rejectInStrictHeadless("Typing requires synthesized keyboard input, which strict headless mode prohibits")
 			let preserveFocus = params["preserveFocus"] as? Bool ?? false
+			if delivery == "pid" { ensureSyntheticFocus() }
 			if let element {
 				let focused = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
 				if focused == .success { performed["focused"] = true }
@@ -2141,6 +2307,7 @@ final class Bridge {
 			acquirePhysicalInputIfNeeded()
 			if delivery == "hid" && !preserveFocus { focusTargetForPhysicalInput() }
 			let text = params["text"] as? String ?? ""
+			if let point = try? coordinatePoint() { animateCursor(at: point) }
 			try postUnicodeText(text, pid: pid, delivery: delivery)
 			performed["grounding"] = "coordinates"
 			if let element, !text.isEmpty {
@@ -2155,6 +2322,7 @@ final class Bridge {
 			guard let keys = params["keys"] as? [String], !keys.isEmpty else {
 				throw BridgeFailure(message: "keypress requires keys", code: "invalid_args")
 			}
+			if delivery == "pid" { ensureSyntheticFocus() }
 			if let element {
 				let focused = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
 				if focused == .success { performed["focused"] = true }
@@ -2174,6 +2342,7 @@ final class Bridge {
 			}
 			acquirePhysicalInputIfNeeded()
 			if delivery == "hid" && !preserveFocus { focusTargetForPhysicalInput() }
+			if let point = try? coordinatePoint() { animateCursor(at: point) }
 			try postKeyPress(keys: keys, pid: pid, delivery: delivery)
 			performed["grounding"] = "coordinates"
 		} else if let element, action == "scroll" {
@@ -2319,10 +2488,15 @@ final class Bridge {
 		// rebuilt list row; a genuinely closed root also leaves the CG set.
 		let signalNotifications: Set<String> = ["AXWindowCreated", "AXSheetCreated", "AXMenuOpened", "AXMenuClosed", "AXFocusedWindowChanged"]
 		var source = "snapshot"
+		var focusRestored = false
 		let deadline = Date().addingTimeInterval(0.40)
 		while Date() < deadline {
+			let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+			if focusGuard.check(frontmostPid: frontmostPid) { focusRestored = true }
 			if cgRootSignature(pid: pid) != beforeCgSignature { source = "cg-poll"; break }
-			if let beforeFrontmostPid, NSWorkspace.shared.frontmostApplication?.processIdentifier != beforeFrontmostPid { source = "cg-poll"; break }
+			// After a restore, keep polling: the frontmost app reads as the target until the
+			// switch back lands, and reporting that as a focus change would be wrong.
+			if !focusRestored, let beforeFrontmostPid, frontmostPid != beforeFrontmostPid { source = "cg-poll"; break }
 			if eventsLive && rootEvents(pid: pid, since: eventCursor).contains(where: { signalNotifications.contains($0.notification) }) { source = "events"; break }
 			usleep(30_000)
 		}
@@ -2336,6 +2510,7 @@ final class Bridge {
 				delta = rootDelta(before: before, beforeFrontmostPid: beforeFrontmostPid, pid: pid)
 			}
 		}
+		delta += focusGuard.drainEvents(targetPid: pid)
 		performed["deltaSource"] = source
 		output["performed"] = performed
 		if !delta.isEmpty { output["rootDelta"] = delta }
@@ -3432,13 +3607,39 @@ final class Bridge {
 		}
 	}
 
-	private func postMouseClick(at point: CGPoint, pid: Int32, button: CGMouseButton = .left, clickCount: Int = 1, delivery: String = "hid") throws {
+	/// Background apps route a pid-targeted mouse event to a window only when it carries
+	/// that window's number and a window-relative location; a plain screen-coordinate
+	/// CGEvent is dropped. NSEvent builds that form; returns nil when the window frame is
+	/// unknown, so callers fall back to a plain event.
+	private func windowTargetedMouseEvent(_ type: CGEventType, at point: CGPoint, windowId: UInt32, clickCount: Int) -> CGEvent? {
+		guard let frame = currentWindowBounds(windowId: windowId),
+			let nsType = NSEvent.EventType(rawValue: UInt(type.rawValue)),
+			[.leftMouseDown, .leftMouseUp, .leftMouseDragged, .rightMouseDown, .rightMouseUp, .rightMouseDragged, .otherMouseDown, .otherMouseUp, .otherMouseDragged].contains(nsType)
+		else { return nil }
+		let location = windowRelativeEventLocation(screenPoint: point, windowOrigin: frame.origin, mainDisplayHeight: CGDisplayBounds(CGMainDisplayID()).height)
+		let pressure: Float = [.leftMouseUp, .rightMouseUp, .otherMouseUp].contains(nsType) ? 0 : 1
+		guard let event = NSEvent.mouseEvent(with: nsType, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: Int(windowId), context: nil, eventNumber: 0, clickCount: clickCount, pressure: pressure)?.cgEvent else { return nil }
+		// NSEvent has no button-number parameter; other-button events default to button 2.
+		if [.otherMouseDown, .otherMouseUp, .otherMouseDragged].contains(nsType) {
+			event.setIntegerValueField(.mouseEventButtonNumber, value: Int64(CGMouseButton.center.rawValue))
+		}
+		return event
+	}
+
+	private func mouseEvent(_ type: CGEventType, at point: CGPoint, button: CGMouseButton, delivery: String, windowId: UInt32?, clickCount: Int) -> CGEvent? {
+		if delivery == "pid", let windowId, let event = windowTargetedMouseEvent(type, at: point, windowId: windowId, clickCount: clickCount) {
+			return event
+		}
+		return CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button)
+	}
+
+	private func postMouseClick(at point: CGPoint, pid: Int32, button: CGMouseButton = .left, clickCount: Int = 1, delivery: String = "hid", windowId: UInt32? = nil) throws {
 		if delivery == "hid" { physicalInputLock.lock() }
 		defer { if delivery == "hid" { physicalInputLock.unlock() } }
 		try postMouseMove(to: point, pid: pid, delivery: delivery)
 		for index in 1...max(1, clickCount) {
-			guard let down = CGEvent(mouseEventSource: nil, mouseType: mouseDownType(for: button), mouseCursorPosition: point, mouseButton: button),
-				let up = CGEvent(mouseEventSource: nil, mouseType: mouseUpType(for: button), mouseCursorPosition: point, mouseButton: button)
+			guard let down = mouseEvent(mouseDownType(for: button), at: point, button: button, delivery: delivery, windowId: windowId, clickCount: index),
+				let up = mouseEvent(mouseUpType(for: button), at: point, button: button, delivery: delivery, windowId: windowId, clickCount: index)
 			else {
 				throw BridgeFailure(message: "Failed to create mouse click event", code: "input_failed")
 			}
@@ -3453,21 +3654,21 @@ final class Bridge {
 		}
 	}
 
-	private func postMouseDrag(points: [CGPoint], pid: Int32, delivery: String = "hid") throws {
+	private func postMouseDrag(points: [CGPoint], pid: Int32, delivery: String = "hid", windowId: UInt32? = nil) throws {
 		if delivery == "hid" { physicalInputLock.lock() }
 		defer { if delivery == "hid" { physicalInputLock.unlock() } }
 		guard points.count >= 2, let first = points.first else {
 			throw BridgeFailure(message: "Drag requires at least two points", code: "invalid_args")
 		}
 		try postMouseMove(to: first, pid: pid, delivery: delivery)
-		guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: first, mouseButton: .left) else {
+		guard let down = mouseEvent(.leftMouseDown, at: first, button: .left, delivery: delivery, windowId: windowId, clickCount: 1) else {
 			throw BridgeFailure(message: "Failed to create mouse down event", code: "input_failed")
 		}
 		postEvent(down, pid: pid, delivery: delivery)
 		usleep(12_000)
 
 		for point in points.dropFirst() {
-			guard let drag = CGEvent(mouseEventSource: nil, mouseType: mouseDraggedType(for: .left), mouseCursorPosition: point, mouseButton: .left) else {
+			guard let drag = mouseEvent(mouseDraggedType(for: .left), at: point, button: .left, delivery: delivery, windowId: windowId, clickCount: 1) else {
 				throw BridgeFailure(message: "Failed to create mouse drag event", code: "input_failed")
 			}
 			postEvent(drag, pid: pid, delivery: delivery)
@@ -3475,7 +3676,7 @@ final class Bridge {
 		}
 
 		guard let last = points.last,
-			let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: last, mouseButton: .left)
+			let up = mouseEvent(.leftMouseUp, at: last, button: .left, delivery: delivery, windowId: windowId, clickCount: 1)
 		else {
 			throw BridgeFailure(message: "Failed to create mouse up event", code: "input_failed")
 		}
@@ -3713,6 +3914,8 @@ An advertised AX action is a delivery capability, not proof of an application-le
 
 `headless: true` maps native actions to the `ax_only` policy. AX press, `AXValue` writes outside web content, and semantic scrolling still run. Actions that would fall back to synthesized pointer input, every `typeText` and `keypress`, and web text replacement fail with `foreground_required` before the helper posts events or activates the target. The agent cursor overlay and activity glow are not shown.
 
+`background_only: true` maps native actions to the `background_only` policy. Synthesized input is always delivered with `postToPid`, the target is never activated or raised, and nothing is posted at the HID event tap. Before that input, the target process receives synthetic focus so it accepts events while another app stays frontmost. Failures are reported instead of escalated to the foreground.
+
 ## Common interpretation rules
 
 - An empty outline usually indicates missing Accessibility trust, an inaccessible target, or an app that exposes no useful AX hierarchy.
@@ -3816,6 +4019,22 @@ The bridge returns that error instead of retrying in the foreground. `ax_only` a
 
 Without strict headless mode, ref-based work normally starts in the background and can escalate only through checked fallback rules.
 
+## Background-only policy
+
+`background_only: true` maps the transaction to the native `background_only` policy. Synthesized pointer and keyboard input is always delivered with `postToPid`, including clicks into text fields and web content. The helper never activates or raises the target and never posts at the HID event tap, so the user's pointer and frontmost window are left alone. The bridge reports `didnt` and `foreground_required` outcomes instead of retrying in the foreground. Apps that ignore pid-targeted events even with synthetic focus can't be driven this way.
+
+## Synthetic focus
+
+AppKit drops pid-targeted clicks for windows that aren't key, and Chromium drops pid-targeted clicks and keystrokes too. Before pid-targeted input, the helper posts two WindowServer event records to the target process alone with the private SkyLight function `SLPSPostEventRecordTo`: "application activated" and "make key window" for the observed window. The target then treats that window as key while the user's frontmost app keeps real keyboard focus. Mouse events for a known window are built with [`NSEvent.mouseEvent`](https://developer.apple.com/documentation/appkit/nsevent/mouseevent(with:location:modifierflags:timestamp:windownumber:context:eventnumber:clickcount:pressure:)) carrying the window number and a window-relative location; screen-coordinate CGEvents posted to a background pid are ignored.
+
+Synthetic focus is skipped when the target is the frontmost app, since making another of its windows key would redirect the user's typing, and for `ax_only`. One helper serves every Pi session, so there is a single focus target, and focusing plus the action's input run under one lease that other connections' actions and releases wait for. Focus is released with an "application deactivated" record when the last registered agent run ends or its connection closes, or 10 seconds after the last focus when no run is registered, unless the user has brought the target forward since. The function is resolved at runtime; when it is missing, `performed.syntheticFocus` reports `synthetic_focus_unavailable` and delivery continues without it.
+
+## Focus-steal guard
+
+Background input can still make the target activate itself, for example a click that opens a window. For `background`, `background_only`, and `ax_only` actions whose target isn't frontmost, the helper watches app activations while the action runs and for 1.5 seconds after it. If the target comes to the front in that window, there was no hardware mouse click since the action began, and no hardware modifier key changed in the half second before, the helper brings back the app that was frontmost with the private SkyLight function `_SLPSSetFrontProcessWithOptions` and makes its front window key again, falling back to [`NSRunningApplication.activate()`](https://developer.apple.com/documentation/appkit/nsrunningapplication/activate()). Plain typing doesn't cancel the restore, because a steal does the most harm while the user is typing in their own app; a click, or a modifier change such as releasing Cmd after Cmd-Tab, is treated as the user switching apps on purpose. A switch made without either, such as Return in Spotlight, can be undone. Only the target counts, not other apps it opens. Foreground actions and `focusWindow` suspend the guard for their target while they run, from any session, and clear it when they finish. Ongoing checks rely on the main run loop of the `serve` daemon; in stdin mode only the action's own root-delta poll checks.
+
+Each steal is reported once as a root delta item with `change: "focusStolen"`, `kind: "app"`, the target's name and pid, `restored`, and `restoredTo`. A steal after the action returned appears in the next action's delta for that target. Keystrokes the user typed between the steal and the restore reach the target.
+
 ## Outcome evidence
 
 Native results distinguish:
@@ -3828,7 +4047,7 @@ Text writes and text entry can use read-back evidence. Pointer actions often nee
 
 ## Agent cursor overlay
 
-When `cursor_overlay` is enabled, non-headless pointer actions delivered in the background with `postToPid` schedule the noninteractive AppKit/SwiftUI agent cursor at the grounded point. Foreground actions that control the physical cursor don't display the overlay. The overlay ignores mouse events, cannot become key or main, and hides automatically. It is visual only and currently limited to the main display.
+When `cursor_overlay` is enabled, non-headless pointer, typing, and keypress actions delivered in the background with `postToPid` schedule the noninteractive AppKit/SwiftUI agent cursor at the grounded point. Foreground actions that control the physical cursor don't display the overlay. The overlay ignores mouse events and cannot become key or main. It stays parked for the whole agent run and hides shortly after the run ends, or eight seconds after the last action when no run is reported. It is visual only and draws on the display containing the grounded point, with a click ripple and an action label.
 
 For state ownership, batching, and successor observations, use the generated [agent state and action contract](../../agent/contract.mdx). For line-level implementation citations and every current limit, use the [complete macOS implementation reference](./implementation.mdx).
 PI_DOCS_REFERENCE_END
@@ -3940,6 +4159,8 @@ The helper prefers Accessibility operations where the target exposes them:
 
 Web-backed editable controls and controls without a usable Accessibility action can require synthesized keyboard or pointer events. Background event delivery uses `CGEvent.postToPid(_:)`; foreground delivery activates and raises the target, then posts the synthesized event at `.cghidEventTap` ([Apple: `postToPid`](https://developer.apple.com/documentation/coregraphics/cgevent/posttopid%28_%3A%29), [Apple: `post(tap:)`](https://developer.apple.com/documentation/coregraphics/cgevent/post%28tap%3A%29), [bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L3362)). These are synthesized events; this documentation does not describe them as physical hardware input.
 
+Before pid-targeted input, `SyntheticFocusController` posts "application activated" and "make key window" event records to the target process with the private SkyLight function `SLPSPostEventRecordTo`, and pid-targeted mouse events carry the window number and a window-relative location built with `NSEvent.mouseEvent`. The records are skipped for a frontmost target and released when no agent run is active ([synthetic_focus.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/synthetic_focus.swift)). `FocusGuard` sends a target that activates itself during background input back behind the user's app and reports `focusStolen` in the root delta ([focus_guard.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/focus_guard.swift)).
+
 `headless: true` maps every native action to the `ax_only` policy. The helper rejects coordinate delivery, `typeText`, `keypress`, and web text replacement with `foreground_required` before posting synthesized events, and the bridge does not escalate that error ([bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L1922)). Without strict headless mode, ref-based actions normally start with background delivery; coordinate clicks and focus-dependent steps can start in foreground, while checked keyboard failures and explicit `foreground_required` errors can escalate there ([bridge.ts](https://github.com/injaneity/pi-computer-use/blob/main/src/bridge.ts#L1185), [bridge.ts](https://github.com/injaneity/pi-computer-use/blob/main/src/bridge.ts#L1208)).
 
 Before foreground coordinate delivery, the helper uses `AXUIElementCopyElementAtPosition` to check whether the point resolves to the intended element or a related ancestor or descendant. An unrelated resolved element produces `occluded_target`; an unavailable or coarse hit test produces an unknown preflight rather than proof of visibility ([bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L2021), [bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L2440)).
@@ -3948,13 +4169,13 @@ Action results distinguish `worked`, `didnt`, and `unknown`. A successful API ca
 
 ## Agent cursor overlay
 
-When `cursor_overlay` is enabled, non-headless pointer-oriented actions delivered in the background with `postToPid` schedule the AppKit/SwiftUI `AgentCursor` overlay at the grounded point; foreground actions that control the physical cursor and `ax_only` actions don't display it ([bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L1982)). The overlay ignores mouse events, cannot become key or main, and hides after eight seconds ([Apple: `ignoresMouseEvents`](https://developer.apple.com/documentation/appkit/nswindow/ignoresmouseevents), [agent_cursor.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/agent_cursor.swift#L6)). It is visual only; action delivery remains in `bridge.swift`.
+When `cursor_overlay` is enabled, non-headless pointer, typing, and keypress actions delivered in the background with `postToPid` schedule the AppKit/SwiftUI `AgentCursor` overlay at the grounded point; foreground actions that control the physical cursor and `ax_only` actions don't display it ([bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L1982)). The overlay ignores mouse events and cannot become key or main. While a client reports an active agent run through `setActivityGlow` with `cursor: true`, the overlay stays parked; it hides 1.5 seconds after the last run ends or the connection closes, and otherwise eight seconds after the last action ([Apple: `ignoresMouseEvents`](https://developer.apple.com/documentation/appkit/nswindow/ignoresmouseevents), [agent_cursor.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/agent_cursor.swift#L6)). It is visual only; action delivery remains in `bridge.swift`.
 
 The current overlay is main-display-only because its frame is created from `NSScreen.main`. The helper excludes its own process from app discovery, but the overlay is not a supported target ([agent_cursor.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/agent_cursor.swift#L61), [bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L951)).
 
 ## Activity glow
 
-`activity_glow` defaults to `false`. When it is enabled and `headless` is `false`, the extension sends `setActivityGlow` over a persistent helper connection when a computer-use tool starts and clears it when the agent run ends ([computer-use.ts](https://github.com/injaneity/pi-computer-use/blob/main/extensions/computer-use.ts#L207)). The helper's `ActivityGlowController` tracks active connections and shows the glow while any is active; a closed connection removes its state ([bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L485), [bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L634), [activity_glow.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/activity_glow.swift#L74)). It creates one borderless window per `NSScreen`, rebuilt when screen parameters change. Each window ignores mouse events, is excluded from Accessibility, and sits at the screen-saver level ([activity_glow.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/activity_glow.swift#L130)).
+`activity_glow` defaults to `false`. When `headless` is `false`, the extension sends `setActivityGlow` over a persistent helper connection when a computer-use tool starts and clears it when the agent run ends, whether or not the glow is enabled, because the run boundary also releases synthetic focus ([computer-use.ts](https://github.com/injaneity/pi-computer-use/blob/main/extensions/computer-use.ts#L207)). The helper's `ActivityGlowController` tracks active connections and shows the glow while any is active; a closed connection removes its state ([bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L485), [bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L634), [activity_glow.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/activity_glow.swift#L74)). It creates one borderless window per `NSScreen`, rebuilt when screen parameters change. Each window ignores mouse events, is excluded from Accessibility, and sits at the screen-saver level ([activity_glow.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/activity_glow.swift#L130)).
 
 ## Current limits
 
@@ -3962,7 +4183,7 @@ The current overlay is main-display-only because its frame is created from `NSSc
 - Accessibility-to-Core-Graphics window pairing is heuristic, and callers must treat low-confidence pairing accordingly. Unpaired roots support semantic observation only.
 - Raw coordinate targets require an image-bearing look; outline-only menu roots cannot be coordinate targets.
 - ScreenCaptureKit readiness, capture, and the command-line screenshot fallback are separate checks, so one successful check does not guarantee every later window capture.
-- The visual agent cursor only covers the main display.
+- The visual agent cursor draws on one display at a time, the one containing the grounded point.
 - Strict headless mode rejects actions that need synthesized pointer or keyboard input, including every `typeText` and `keypress`.
 PI_DOCS_REFERENCE_END
 */

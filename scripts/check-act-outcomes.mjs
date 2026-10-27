@@ -47,6 +47,28 @@ rootsAfter([{ pid: 99, rootRef: "ax:dlg", windowRef: "ax:dlg" }]);
 result = await terminalDesktopActionResult(target, "s1", { strategy: "act" }, new Error("x"));
 assert.equal(result.details.status, "target_closed");
 
+assert.deepEqual(testing.rootDeltaLines({ rootDelta: [
+	{ change: "focusStolen", kind: "app", title: "Google Chrome", pid: 7, restored: true, restoredTo: "Notes" },
+	{ change: "focusStolen", kind: "app", title: "Google Chrome", pid: 7, restored: false, restoredTo: "Notes" },
+] }), [
+	'Focus stolen: "Google Chrome" came to the front during background input; "Notes" was brought back',
+	'Focus stolen: "Google Chrome" came to the front during background input; "Notes" could not be brought back',
+]);
+
+const steal = { change: "focusStolen", kind: "app", title: "App", pid: 7, restored: true, restoredTo: "Notes" };
+const actPolicies = [];
+currentPlatformBackend.act = async (request) => {
+	actPolicies.push(request.policy);
+	return request.policy === "foreground" ? { outcome: "worked", performed: { delivery: "hid" } } : { outcome: "didnt", performed: { delivery: "pid" }, rootDelta: [steal] };
+};
+const escalated = await testing.runInOperation(
+	() => testing.helperAct(target, { action: "typeText", target: { x: 1, y: 1 }, params: { text: "a" } }, false),
+	{ currentLook: { lookId: "look" }, currentCapture: {} },
+);
+assert.deepEqual(actPolicies, ["background", "foreground"]);
+assert.equal(escalated.escalatedToForeground, true);
+assert.deepEqual(escalated.rootDelta, [steal], "a background attempt's focus steal survives foreground escalation");
+
 const uiNode = (ref, title, role = "AXButton", fields = {}) => ({ ref, role, subrole: "", identifier: "", title, description: "", value: "", actions: ["AXPress"], canPress: true, canFocus: false, canSetValue: false, canScroll: false, canIncrement: false, canDecrement: false, isTextInput: false, focused: false, offscreen: false, pictureOnly: false, truncated: false, text: [], children: [], ...fields });
 const outlineOf = (rootNode) => {
 	const nodes = [];

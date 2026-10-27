@@ -8,7 +8,7 @@ import path from "node:path";
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { canRetryInForeground, outcomeAfterCheck, outcomeAfterObservedValues, prepareAction, type ActionState, type PreparedAction } from "./actions.ts";
 import { cdpClickForContext, cdpDragForContext, cdpEvaluateForContext, cdpKeypressForContext, cdpMouseForContext, cdpNavigateContext, cdpScrollForContext, cdpSnapshotForContext, cdpTabForWindow, cdpTypeFocusedForContext, cdpTypeForContext, disconnectCdp, listCdpPageContexts, type CdpConsoleEntry, type CdpPageSnapshot } from "./cdp.ts";
-import { getComputerUseConfig, isBrowserUseEnabled, isHeadlessMode, loadComputerUseConfig } from "./config.ts";
+import { getComputerUseConfig, isBackgroundOnlyMode, isBrowserUseEnabled, isHeadlessMode, loadComputerUseConfig } from "./config.ts";
 import { normalizeFindParams } from "./find-params.ts";
 import { noteAfterAct, noteFromLook, noteRegionKeyForRef, renderNote, type WindowNote } from "./note.ts";
 import { controlLine, foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, rankedTextMatch, renderInteractiveControls, restoreOutline, searchOutline, searchOutlineRanked, serializeOutline, serializeOutlineNodeShallow, serializeOutlineSearchMatch, type LookResponse, type Outline, type OutlineChange, type OutlineDiff, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode, type SerializedOutlineSearchMatch } from "./outline.ts";
@@ -32,7 +32,7 @@ interface ActivationFlags {
 
 type ExecutionVariant = "stealth" | "default";
 type ActionDelivery = "ax" | NativeInputDelivery;
-type DeliveryPolicy = "ax_only" | "background" | "default" | "foreground";
+type DeliveryPolicy = "ax_only" | "background" | "background_only" | "default" | "foreground";
 type ActOutcome = "worked" | "didnt" | "unknown";
 
 interface ExecutionTrace {
@@ -312,7 +312,7 @@ const runtimeState: RuntimeState = {
 };
 
 const savedStates = new SavedStates();
-export const testing = { runInOperation: <T>(fn: () => T, state: OperationState = {}): T => savedStates.operations.run(state, fn), buildToolResult, browserObservationResult, waitForViewText, performSearchUi };
+export const testing = { runInOperation: <T>(fn: () => T, state: OperationState = {}): T => savedStates.operations.run(state, fn), buildToolResult, browserObservationResult, waitForViewText, performSearchUi, rootDeltaLines, helperAct };
 let resourceScheduler = new ResourceScheduler();
 
 function operationState(): OperationState {
@@ -372,6 +372,7 @@ function currentRuntimeMode(): ExecutionVariant {
 
 function currentDeliveryPolicy(): DeliveryPolicy {
 	if (isHeadlessMode()) return "background";
+	if (isBackgroundOnlyMode()) return "background_only";
 	const value = (process.env.PI_COMPUTER_USE_DELIVERY_POLICY ?? process.env.PI_COMPUTER_USE_EVENT_DELIVERY ?? "default").toLowerCase();
 	return value === "background" || value === "pid" ? "background" : value === "foreground" || value === "hid" ? "foreground" : value === "ax_only" || value === "ax-only" ? "ax_only" : "default";
 }
@@ -1199,6 +1200,14 @@ async function helperAct(
 	};
 	const textTimeout = "text" in action.params ? action.params.text.length * 25 + 4_000 : COMMAND_TIMEOUT_MS;
 	const timeoutMs = Math.max(COMMAND_TIMEOUT_MS, textTimeout);
+	if (!headless && isBackgroundOnlyMode()) {
+		// Background-only delivery never activates the target or drives the physical
+		// pointer, so a refused or failed attempt is reported instead of escalated.
+		const result = checked(await currentPlatformBackend.act(helperActRequest(target, action, "background_only"), { signal, timeoutMs }));
+		const trace = executionTraceFromAct(result, "background_only");
+		trace.backgroundFirst = true;
+		return trace;
+	}
 	if ((action.usesCurrentFocus || action.needsForeground) && !headless) {
 		const foreground = checked(await currentPlatformBackend.act(helperActRequest(target, action, "foreground"), { signal, timeoutMs }));
 		const trace = executionTraceFromAct(foreground, "foreground");
@@ -1211,6 +1220,9 @@ async function helperAct(
 		if (canRetryInForeground(action, result.outcome, headless)) {
 			const foreground = checked(await currentPlatformBackend.act(helperActRequest(target, action, "foreground"), { signal, timeoutMs }));
 			const trace = executionTraceFromAct(foreground, "foreground");
+			// The helper reports each steal once; the background attempt's would otherwise be lost.
+			const backgroundSteals = (result.rootDelta ?? []).filter((delta) => delta.change === "focusStolen");
+			if (backgroundSteals.length) trace.rootDelta = [...backgroundSteals, ...(trace.rootDelta ?? [])];
 			trace.backgroundFirst = true;
 			trace.escalatedToForeground = true;
 			trace.escalationReason = "side_effect_free_didnt";
@@ -1260,6 +1272,10 @@ function rootDeltaLines(execution: ExecutionTrace): string[] {
 		const suffix = `${quotedTitle}${flags ? ` (${flags})` : ""}${ref}`;
 		if (delta.change === "appeared") return `New root: ${delta.kind}${suffix}`;
 		if (delta.change === "closed") return `Root closed: ${delta.kind}${suffix}`;
+		if (delta.change === "focusStolen") {
+			const app = delta.restoredTo ? JSON.stringify(delta.restoredTo) : "the user's app";
+			return `Focus stolen:${quotedTitle} came to the front during background input; ${delta.restored ? `${app} was brought back` : `${app} could not be brought back`}`;
+		}
 		return `Root focused: ${delta.kind}${suffix}`;
 	});
 }

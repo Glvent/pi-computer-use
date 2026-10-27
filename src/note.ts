@@ -151,6 +151,8 @@ export function noteAfterAct(prev: WindowNote | undefined, targetRef: string | u
 		}
 	}
 	for (const delta of refreshOutcome.rootDelta ?? []) {
+		// An app-level focus event, not a root the agent can look at.
+		if (delta.change === "focusStolen") continue;
 		note.regions.unshift({
 			key: `root:${delta.change}:${delta.ref ?? delta.kind}:${delta.title ?? ""}`,
 			label: `${delta.kind}${delta.title ? ` ${delta.title}` : ""}`,

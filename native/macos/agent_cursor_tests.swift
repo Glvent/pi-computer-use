@@ -57,6 +57,25 @@ struct AgentCursorTests {
             y: latestTarget.y + endpointOffset
         )
         expect(distance(renderer.position, expectedPosition) < 0.001, "latest target should supersede in-flight motion")
+
+        renderer.moveTo(point: CGPoint(x: 200, y: 200), label: "click", pulse: true)
+        expect(renderer.label == "click", "motion should carry its action label")
+        var sawPulse = false
+        for _ in 0..<12_000 where renderer.isAnimating {
+            now += 1.0 / 120.0
+            renderer.tick(now: now)
+            if renderer.pulseProgress != nil { sawPulse = true }
+        }
+        expect(sawPulse, "a pulsing motion should show the click ripple on arrival")
+        expect(!renderer.isAnimating && renderer.pulseProgress == nil, "renderer should become idle after the ripple ends")
+        expect(renderer.pulseCenter == CGPoint(x: 200, y: 200), "the ripple should center on the grounded point")
+
+        renderer.moveTo(point: CGPoint(x: 400, y: 400), label: "type")
+        for _ in 0..<12_000 where renderer.isAnimating {
+            now += 1.0 / 120.0
+            renderer.tick(now: now)
+            expect(renderer.pulseProgress == nil, "non-click motion should not ripple")
+        }
     }
 
     @MainActor
@@ -95,6 +114,26 @@ struct AgentCursorTests {
         scheduler.fire(2)
         expect(!recreatedWindow.isVisible, "the recreated overlay should retain the idle lifecycle")
         expect(recreatedWindow.contentView == nil, "the recreated overlay should release its view tree")
+
+        cursor.setHeld(true)
+        cursor.animate(to: CGPoint(x: 400, y: 400), above: 0)
+        guard let heldWindow = application.windows.first(where: {
+            !existingWindows.contains(ObjectIdentifier($0)) && $0 !== firstWindow && $0 !== recreatedWindow && $0.isVisible
+        }) else {
+            fail("an action during a held run should show the overlay")
+        }
+        expect(scheduler.count == 3, "a held cursor should not schedule an idle hide")
+
+        cursor.setHeld(false)
+        expect(scheduler.count == 4 && scheduler.delays[3] == AgentCursor.releaseHideDelay, "releasing the hold should schedule the short hide")
+        cursor.setHeld(true)
+        scheduler.fire(3)
+        expect(heldWindow.isVisible, "a release superseded by a new hold should not hide the overlay")
+
+        cursor.setHeld(false)
+        scheduler.fire(4)
+        expect(!heldWindow.isVisible, "the run's end should hide the overlay")
+        expect(heldWindow.contentView == nil, "the run's end should release the view tree")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -117,7 +156,10 @@ private final class ManualIdleHideScheduler {
 
     var count: Int { actions.count }
 
-    func schedule(_ action: @escaping @MainActor () -> Void) -> Task<Void, Never> {
+    private(set) var delays: [Duration] = []
+
+    func schedule(_ delay: Duration, _ action: @escaping @MainActor () -> Void) -> Task<Void, Never> {
+        delays.append(delay)
         actions.append(action)
         return Task {}
     }

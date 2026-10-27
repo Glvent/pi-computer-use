@@ -45,6 +45,8 @@ An advertised AX action is a delivery capability, not proof of an application-le
 
 `headless: true` maps native actions to the `ax_only` policy. AX press, `AXValue` writes outside web content, and semantic scrolling still run. Actions that would fall back to synthesized pointer input, every `typeText` and `keypress`, and web text replacement fail with `foreground_required` before the helper posts events or activates the target. The agent cursor overlay and activity glow are not shown.
 
+`background_only: true` maps native actions to the `background_only` policy. Synthesized input is always delivered with `postToPid`, the target is never activated or raised, and nothing is posted at the HID event tap. Before that input, the target process receives synthetic focus so it accepts events while another app stays frontmost. Failures are reported instead of escalated to the foreground.
+
 ## Common interpretation rules
 
 - An empty outline usually indicates missing Accessibility trust, an inaccessible target, or an app that exposes no useful AX hierarchy.

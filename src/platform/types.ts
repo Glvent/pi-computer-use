@@ -109,13 +109,16 @@ export interface HelperActPerformed {
 }
 
 export interface PlatformRootDelta {
-	change: "appeared" | "closed" | "focused";
+	/** `focusStolen`: the background target came to the front on its own; `restored` says whether `restoredTo` was brought back. */
+	change: "appeared" | "closed" | "focused" | "focusStolen";
 	kind: string;
 	ref?: string;
 	title?: string;
 	pid: number;
 	isModal?: boolean;
 	metadata?: Record<string, unknown>;
+	restored?: boolean;
+	restoredTo?: string;
 }
 
 export interface HelperActResult {
@@ -151,7 +154,7 @@ export interface PlatformObserveRequest {
 }
 
 export type PlatformActTarget = { ref: string } | { x: number; y: number } | { focus: PlatformPoint };
-type PlatformDeliveryPolicy = "ax_only" | "background" | "default" | "foreground";
+type PlatformDeliveryPolicy = "ax_only" | "background" | "background_only" | "default" | "foreground";
 type PlatformMouseButton = "left" | "right" | "middle";
 type PlatformActDeliveryParam = { delivery?: NativeInputDelivery };
 export type PlatformPoint = { x: number; y: number };
