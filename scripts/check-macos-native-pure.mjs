@@ -53,6 +53,9 @@ check(release[0x08] == 0x0d && release[0x8a] == 0x02 && release[0x3c] == 7, "rel
 let relative = windowRelativeEventLocation(screenPoint: CGPoint(x: 192, y: 355), windowOrigin: CGPoint(x: 22, y: 53), mainDisplayHeight: 884)
 check(relative.x == 170 && relative.y == 582, "window event location flips against the main display so cgEvent yields (170, 302)")
 
+let emojiRange = textSelectionRange(in: "👋 hi there", matching: "there")
+check(emojiRange?.location == 6 && emojiRange?.length == 5, "selection ranges count UTF-16 units like AXSelectedTextRange")
+check(textSelectionRange(in: "abc", matching: "x") == nil && textSelectionRange(in: "abc", matching: "") == nil, "missing or empty text selects nothing")
 check(screenIsLocked(session: ["CGSSessionScreenIsLocked": true]), "locked session is detected")
 check(!screenIsLocked(session: ["kCGSSessionOnConsoleKey": true]), "unlocked session omits the lock key")
 check(!screenIsLocked(session: nil), "missing session dictionary isn't treated as locked")

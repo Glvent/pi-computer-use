@@ -174,6 +174,9 @@ export type PlatformActRequest = PlatformActRequestBase & (
 	| { action: "scroll"; params: { scrollX: number; scrollY: number } & PlatformActDeliveryParam }
 	| { action: "drag"; params: { path: PlatformPoint[] } & PlatformActDeliveryParam }
 	| { action: "moveMouse"; params: PlatformActDeliveryParam }
+	| { action: "secondaryAction"; params: { name: string } & PlatformActDeliveryParam }
+	| { action: "selectText"; params: { text: string } & PlatformActDeliveryParam }
+	| { action: "paste"; params: { text: string } & PlatformActDeliveryParam }
 );
 
 export interface PlatformReadTextRequest {

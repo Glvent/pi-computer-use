@@ -301,6 +301,7 @@ const BROWSER_CONTEXT_PREFIX = "browser:";
 const MANAGED_BROWSER_READY_TIMEOUT_MS = 15_000;
 const AUTO_IMAGE_MAX_DIMENSION = 900;
 const EXPLICIT_IMAGE_MAX_DIMENSION = 1_600;
+const MACOS_ONLY_ACTIONS = new Set<string>(["secondaryAction", "selectText", "paste"]);
 const BROWSER_TRANSACTION_ACTIONS = new Set<UiAction["action"]>(["press", "click", "setText", "typeText", "keypress", "scroll", "drag", "moveMouse"]);
 
 const runtimeState: RuntimeState = {
@@ -1269,6 +1270,9 @@ function helperActRequest(target: ResolvedTarget, action: NativePreparedAction, 
 			case "scroll": return { ...base, action: action.action, params: { scrollX: action.params.scrollX, scrollY: action.params.scrollY, delivery } };
 			case "drag": return { ...base, action: action.action, params: { path: action.params.path, delivery } };
 			case "moveMouse": return { ...base, action: action.action, params: { delivery } };
+			case "secondaryAction": return { ...base, action: action.action, params: { name: action.params.name, delivery } };
+			case "selectText":
+			case "paste": return { ...base, action: action.action, params: { text: action.params.text, delivery } };
 		}
 	})();
 }
@@ -1820,6 +1824,9 @@ async function performInspectUi(params: InspectUiParams): Promise<AgentToolResul
 }
 
 function prepareUiAction(action: UiAction, state: ActionState, look: LookResponse, headless: boolean): PreparedAction {
+	if (MACOS_ONLY_ACTIONS.has(action.action) && process.platform !== "darwin") {
+		throw new Error(`${action.action} is only supported on macOS.`);
+	}
 	return prepareAction(action, state, {
 		headless,
 		image: look.image,
@@ -2579,6 +2586,12 @@ act_ui({
 ```
 
 The runtime prefers background semantics when they are credible, verifies the result, and escalates side-effect-free failed keyboard input to foreground delivery automatically. Ambiguous pointer actions are never replayed blindly.
+
+Three macOS-only actions cover what pointer and keyboard steps do poorly:
+
+- `secondaryAction` performs a named accessibility action other than press on `ref`, such as `AXShowMenu` or `AXIncrement`. `inspect_ui` lists the actions an element offers; an action it doesn't offer fails with `unsupported_action`.
+- `selectText` selects the first occurrence of `text` in the value of `ref` through the accessibility selection range, without pointer input. It reports `didnt` with `text_not_found` when the value doesn't contain the text.
+- `paste` inserts `text` with Cmd-V through the clipboard, which suits long text. The text is marked transient for clipboard managers, and the user's clipboard is put back afterwards unless something else changed it meanwhile (`performed.clipboardRestored: false`). Like `typeText`, it can omit `ref` after a click and is refused in strict headless mode. It reports `worked` only when the element's value changed and is never retried in the foreground, since pasting over identical text changes nothing visible. The clipboard is restored after the value changes, or after 2 seconds (1 second without a ref); an app that reads the clipboard later than that would paste the user's own clipboard.
 
 ### Successor views
 

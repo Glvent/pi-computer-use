@@ -67,8 +67,10 @@ export interface UiCondition {
 }
 
 export interface UiAction {
-	action: "press" | "click" | "setText" | "typeText" | "keypress" | "scroll" | "drag" | "moveMouse";
+	action: "press" | "click" | "setText" | "typeText" | "keypress" | "scroll" | "drag" | "moveMouse" | "secondaryAction" | "selectText" | "paste";
 	ref?: string;
+	/** Accessibility action name for `secondaryAction`, as listed by inspect_ui. */
+	name?: string;
 	x?: number;
 	y?: number;
 	text?: string;

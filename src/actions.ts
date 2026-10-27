@@ -12,6 +12,9 @@ export type PreparedAction =
 	| { action: "scroll"; target: ActionTarget; params: { scrollX: number; scrollY: number }; establishesFocus: false; usesCurrentFocus: false; needsForeground: false }
 	| { action: "drag"; target: ActionTarget; params: { path: Array<{ x: number; y: number }> }; establishesFocus: false; usesCurrentFocus: false; needsForeground: false }
 	| { action: "moveMouse"; target: ActionTarget; params: Record<string, never>; establishesFocus: false; usesCurrentFocus: false; needsForeground: false }
+	| { action: "secondaryAction"; target: { ref: string }; params: { name: string }; establishesFocus: false; usesCurrentFocus: false; needsForeground: false }
+	| { action: "selectText"; target: { ref: string }; params: { text: string }; establishesFocus: false; usesCurrentFocus: false; needsForeground: false }
+	| { action: "paste"; target: ActionTarget; params: { text: string }; establishesFocus: false; usesCurrentFocus: boolean; needsForeground: false }
 	| { action: "wait"; params: { ms: number }; establishesFocus: false; usesCurrentFocus: false; needsForeground: false };
 
 export interface ActionState {
@@ -80,6 +83,17 @@ function nativeTarget(action: UiAction, operation: PreparedAction["action"], env
 	throw new Error(`${operation} requires either ref or both x and y.`);
 }
 
+/** Accessibility-only actions need the element itself; a coordinate fallback can't perform them. */
+function elementTarget(target: ActionTarget, operation: string): { ref: string } {
+	if (!("ref" in target)) throw new Error(`${operation} requires a ref to an accessibility element; this ref is coordinate-only.`);
+	return target;
+}
+
+function nonEmptyText(value: unknown, operation: string): string {
+	if (typeof value !== "string" || value.length === 0) throw new Error(`${operation}.text must be a non-empty string.`);
+	return value;
+}
+
 function focusedTarget(env: ActionEnvironment): ActionTarget {
 	if (!env.image) throw new Error("Focused keyboard input requires an image-bearing state.");
 	return { focus: { x: Math.floor(env.image.width / 2), y: Math.floor(env.image.height / 2) } };
@@ -92,7 +106,7 @@ function containsEditable(node: OutlineNode): boolean {
 
 export function prepareAction(action: UiAction, state: ActionState, env: ActionEnvironment): PreparedAction {
 	const operation = action.action;
-	const usesCurrentFocus = !env.headless && state.currentFocus && !action.ref && (operation === "typeText" || operation === "keypress");
+	const usesCurrentFocus = !env.headless && state.currentFocus && !action.ref && (operation === "typeText" || operation === "keypress" || operation === "paste");
 	const target = usesCurrentFocus ? focusedTarget(env) : nativeTarget(action, operation, env);
 	const establishesFocus = !env.headless && Boolean(action.ref) && (operation === "click" || operation === "press") && containsEditable(env.node(action.ref!));
 	const needsForeground = !env.headless && (operation === "click" || operation === "press") && "x" in target;
@@ -106,6 +120,13 @@ export function prepareAction(action: UiAction, state: ActionState, env: ActionE
 		case "scroll": return { action: operation, target, params: { scrollX: scrollDelta(action.scrollX), scrollY: scrollDelta(action.scrollY) }, establishesFocus: false, usesCurrentFocus: false, needsForeground: false };
 		case "drag": return { action: operation, target, params: { path: path(action.path, env) }, establishesFocus: false, usesCurrentFocus: false, needsForeground: false };
 		case "moveMouse": return { action: operation, target, params: {}, establishesFocus: false, usesCurrentFocus: false, needsForeground: false };
+		case "secondaryAction": {
+			const name = action.name?.trim();
+			if (!name) throw new Error("secondaryAction.name must name an accessibility action.");
+			return { action: operation, target: elementTarget(target, operation), params: { name }, establishesFocus: false, usesCurrentFocus: false, needsForeground: false };
+		}
+		case "selectText": return { action: operation, target: elementTarget(target, operation), params: { text: nonEmptyText(action.text, operation) }, establishesFocus: false, usesCurrentFocus: false, needsForeground: false };
+		case "paste": return { action: operation, target, params: { text: nonEmptyText(action.text, operation) }, establishesFocus: false, usesCurrentFocus, needsForeground: false };
 	}
 }
 

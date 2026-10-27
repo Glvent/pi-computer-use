@@ -34,6 +34,9 @@ const uiAction = Type.Union([
 	Type.Object({ action: Type.Literal("scroll"), ref: Type.Optional(Type.String()), scrollX: Type.Optional(Type.Number()), scrollY: Type.Optional(Type.Number()) }),
 	Type.Object({ action: Type.Literal("drag"), path: Type.Array(Type.Object(point), { minItems: 2 }) }),
 	Type.Object({ action: Type.Literal("moveMouse"), ...point }),
+	Type.Object({ action: Type.Literal("secondaryAction"), ref: Type.String(), name: Type.String({ description: "Accessibility action other than press, as listed by inspect_ui, e.g. AXShowMenu or AXIncrement" }) }),
+	Type.Object({ action: Type.Literal("selectText"), ref: Type.String({ description: "Text element whose value contains text" }), text: Type.String({ minLength: 1, description: "First occurrence of this text is selected" }) }),
+	Type.Object({ action: Type.Literal("paste"), ref: Type.Optional(Type.String({ description: "Omit after a click to paste into the focus established by that click" })), text: Type.String({ minLength: 1 }) }),
 ]);
 
 const conditionProperties = {
@@ -116,7 +119,10 @@ const actTool = defineTool({
 	label: "Act",
 	description: "Perform one or more precisely targeted checked actions and return the successor state.",
 	promptSnippet: "Pass dependent click/type steps together and use expect for observable completion.",
-	promptGuidelines: ["After clicking an editable region, omit ref from typeText/keypress so input follows the established focus."],
+	promptGuidelines: [
+		"After clicking an editable region, omit ref from typeText/keypress so input follows the established focus.",
+		"Use paste for long text; it goes through the clipboard, which is restored afterwards. Use selectText to select existing text before replacing or formatting it.",
+	],
 	parameters: Type.Object({ stateId, expect: Type.Optional(Type.Object(conditionProperties)), actions: Type.Array(uiAction, { minItems: 1, maxItems: 20 }) }),
 	execute: executeAct,
 });

@@ -117,6 +117,12 @@ act_ui({
 
 The runtime prefers background semantics when they are credible, verifies the result, and escalates side-effect-free failed keyboard input to foreground delivery automatically. Ambiguous pointer actions are never replayed blindly.
 
+Three macOS-only actions cover what pointer and keyboard steps do poorly:
+
+- `secondaryAction` performs a named accessibility action other than press on `ref`, such as `AXShowMenu` or `AXIncrement`. `inspect_ui` lists the actions an element offers; an action it doesn't offer fails with `unsupported_action`.
+- `selectText` selects the first occurrence of `text` in the value of `ref` through the accessibility selection range, without pointer input. It reports `didnt` with `text_not_found` when the value doesn't contain the text.
+- `paste` inserts `text` with Cmd-V through the clipboard, which suits long text. The text is marked transient for clipboard managers, and the user's clipboard is put back afterwards unless something else changed it meanwhile (`performed.clipboardRestored: false`). Like `typeText`, it can omit `ref` after a click and is refused in strict headless mode. It reports `worked` only when the element's value changed and is never retried in the foreground, since pasting over identical text changes nothing visible. The clipboard is restored after the value changes, or after 2 seconds (1 second without a ref); an app that reads the clipboard later than that would paste the user's own clipboard.
+
 ### Successor views
 
 The initial `observe_ui` response is the compact control list; expand for structure. A normal `act_ui` response saves the complete resulting state but renders only its trustworthy changes:

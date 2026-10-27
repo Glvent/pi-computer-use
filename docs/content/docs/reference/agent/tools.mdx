@@ -102,6 +102,7 @@ Perform one or more precisely targeted checked actions and return the successor 
 Pass dependent click/type steps together and use expect for observable completion.
 
 - After clicking an editable region, omit ref from typeText/keypress so input follows the established focus.
+- Use paste for long text; it goes through the clipboard, which is restored afterwards. Use selectText to select existing text before replacing or formatting it.
 
 ### parameters
 
@@ -131,6 +132,9 @@ Pass dependent click/type steps together and use expect for observable completio
 | `scroll` | `ref`: `string` (optional); `scrollX`: `number` (optional); `scrollY`: `number` (optional) |
 | `drag` | `path`: array of object (x: `number`, y: `number`) (required) minItems: `2`. |
 | `moveMouse` | `x`: `number` (required); `y`: `number` (required) |
+| `secondaryAction` | `ref`: `string` (required); `name`: `string` (required) |
+| `selectText` | `ref`: `string` (required); `text`: `string` (required) |
+| `paste` | `ref`: `string` (optional); `text`: `string` (required) |
 
 ## `read_text`
 

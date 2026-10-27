@@ -204,6 +204,13 @@ enum FocusStealVerdict: Equatable {
 	case ignore(String)
 }
 
+/// UTF-16 range of the first occurrence of `text`, the unit AXSelectedTextRange counts in.
+func textSelectionRange(in value: String, matching text: String) -> CFRange? {
+	guard !text.isEmpty else { return nil }
+	let found = (value as NSString).range(of: text)
+	return found.location == NSNotFound ? nil : CFRange(location: found.location, length: found.length)
+}
+
 /// `CGSSessionScreenIsLocked` is present and true only while the login session is locked.
 func screenIsLocked(session: [String: Any]?) -> Bool {
 	(session?["CGSSessionScreenIsLocked"] as? Bool) == true
@@ -508,6 +515,7 @@ final class Bridge {
 	private let focusGuard = FocusGuard()
 	private let inputSuppressionGuard = InputSuppressionGuard()
 	private let physicalInputLock = NSRecursiveLock()
+	private let clipboardLock = NSLock()
 	private let supportsAgentCursor = CommandLine.arguments.contains("serve")
 	private let browserBundleIds: Set<String> = [
 		"com.apple.Safari", "com.google.Chrome", "org.chromium.Chromium", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac", "com.vivaldi.Vivaldi", "net.imput.helium", "org.mozilla.firefox",
@@ -2121,7 +2129,8 @@ final class Bridge {
 				return button == "left" ? click : "\(button) \(click)"
 			}
 			if action == "keypress" { return (params["keys"] as? [String]).map { $0.joined(separator: "+") } }
-			return ["scroll": "scroll", "drag": "drag", "typeText": "type", "setText": "set text"][action]
+			if action == "secondaryAction" { return params["name"] as? String }
+			return ["scroll": "scroll", "drag": "drag", "typeText": "type", "setText": "set text", "selectText": "select", "paste": "paste"][action]
 		}
 
 		func animateCursor(at point: CGPoint) {
@@ -2129,7 +2138,7 @@ final class Bridge {
 				(request["cursorOverlay"] as? Bool ?? true),
 				delivery == "pid",
 				policy != "ax_only",
-				["press", "click", "moveMouse", "scroll", "drag", "typeText", "setText", "keypress"].contains(action)
+				["press", "click", "moveMouse", "scroll", "drag", "typeText", "setText", "keypress", "secondaryAction", "selectText", "paste"].contains(action)
 			else { return }
 			let label = cursorLabel()
 			let pulse = action == "press" || action == "click"
@@ -2357,6 +2366,72 @@ final class Bridge {
 			if let point = try? coordinatePoint() { animateCursor(at: point) }
 			try postKeyPress(keys: keys, pid: pid, delivery: delivery)
 			performed["grounding"] = "coordinates"
+		} else if action == "secondaryAction" {
+			guard let element else { throw BridgeFailure(message: "secondaryAction requires an element ref", code: "invalid_args") }
+			let name = (params["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+			let available = actionNames(element)
+			guard !name.isEmpty, available.contains(name) else {
+				throw BridgeFailure(message: "The element doesn't offer accessibility action '\(name)'. It offers: \(available.isEmpty ? "none" : available.joined(separator: ", "))", code: "unsupported_action")
+			}
+			if let point = try? coordinatePoint() { animateCursor(at: point) }
+			let status = AXUIElementPerformAction(element, name as CFString)
+			performed["grounding"] = "description"
+			performed["delivery"] = "ax"
+			performed["axAction"] = name
+			if status != .success {
+				return finish(["outcome": "didnt", "performed": performed, "evidence": ["axError": Int(status.rawValue)]])
+			}
+			// Falls through to the shared value, selection, and window evidence below.
+		} else if action == "selectText" {
+			guard let element else { throw BridgeFailure(message: "selectText requires an element ref", code: "invalid_args") }
+			let text = params["text"] as? String ?? ""
+			let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
+			performed["grounding"] = "description"
+			performed["delivery"] = "ax"
+			guard var range = textSelectionRange(in: value, matching: text) else {
+				return finish(["outcome": "didnt", "performed": performed, "evidence": ["reason": "text_not_found"]])
+			}
+			if let point = try? coordinatePoint() { animateCursor(at: point) }
+			let status = AXValueCreate(.cfRange, &range).map {
+				AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, $0)
+			} ?? .failure
+			let selected = stringAttribute(element, attribute: kAXSelectedTextAttribute as CFString)
+			// Some web text controls accept the range without reporting AXSelectedText back.
+			let outcome = selected == text ? "worked" : (status == .success && selected == nil ? "unknown" : "didnt")
+			return finish(["outcome": outcome, "performed": performed, "evidence": ["selectedText": selected ?? "", "range": ["location": range.location, "length": range.length]]])
+		} else if action == "paste" {
+			try rejectInStrictHeadless("Paste requires a synthesized Cmd-V, which strict headless mode prohibits")
+			let preserveFocus = params["preserveFocus"] as? Bool ?? false
+			let text = params["text"] as? String ?? ""
+			guard !text.isEmpty else { throw BridgeFailure(message: "paste requires text", code: "invalid_args") }
+			if delivery == "pid" { ensureSyntheticFocus() }
+			if let element, AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success {
+				performed["focused"] = true
+			}
+			acquirePhysicalInputIfNeeded()
+			if delivery == "hid" && !preserveFocus { focusTargetForPhysicalInput() }
+			if let point = try? coordinatePoint() { animateCursor(at: point) }
+			let restored = try withTemporaryPasteboardString(text) {
+				try postKeyPress(keys: ["cmd", "v"], pid: pid, delivery: delivery)
+				// The target reads the pasteboard while handling Cmd-V; restoring earlier would
+				// paste the user's clipboard instead. Without a value change to watch there is no
+				// signal that it has read it, so the wait is a bound, not a guarantee.
+				let deadline = Date().addingTimeInterval(element == nil ? 1.0 : 2.0)
+				repeat {
+					usleep(50_000)
+					if let element, (stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? "") != (beforeValue ?? "") { break }
+				} while Date() < deadline
+			}
+			performed["grounding"] = "keyboard-events"
+			performed["clipboardRestored"] = restored
+			// An unchanged value isn't proof the paste failed (pasting over an identical selection,
+			// controls without AXValue), so it stays unknown and is never replayed.
+			if let element {
+				let afterValue = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
+				let changed = afterValue != (beforeValue ?? "")
+				return finish(["outcome": changed ? "worked" : "unknown", "performed": performed, "evidence": ["value": afterValue, "valueChanged": changed]])
+			}
+			return finish(["outcome": "unknown", "performed": performed])
 		} else if let element, action == "scroll" {
 			let cursorPoint = try? coordinatePoint()
 			let before = scrollPositionSignature(element)
@@ -2377,7 +2452,7 @@ final class Bridge {
 		let windowChanged = beforeFocusedWindow != focusedWindowSummary(pid: pid) || beforeSheetCount != afterSheetCount
 		var outcome = preflightCapsUnknown ? "unknown" : "unknown"
 		var evidence: [String: Any] = [:]
-		if let element, action == "press" || action == "click" {
+		if let element, action == "press" || action == "click" || action == "secondaryAction" {
 			let afterValue = stringAttribute(element, attribute: kAXValueAttribute as CFString)
 			let afterSelected = stringAttribute(element, attribute: kAXSelectedTextAttribute as CFString)
 			if beforeValue != afterValue || beforeSelected != afterSelected || windowChanged {
@@ -3617,6 +3692,40 @@ final class Bridge {
 		default:
 			return .leftMouseDragged
 		}
+	}
+
+	/// Puts `text` on the general pasteboard for `body`, then puts back what the user had.
+	/// The text is marked transient and auto-generated so clipboard managers that honor
+	/// nspasteboard.org types skip it. Returns false when something else changed the
+	/// pasteboard meanwhile; the user's newer copy is then kept.
+	private func withTemporaryPasteboardString(_ text: String, _ body: () throws -> Void) throws -> Bool {
+		// Innermost lock: overlapping pastes from other sessions would otherwise save each
+		// other's temporary text as "the user's clipboard".
+		clipboardLock.lock()
+		defer { clipboardLock.unlock() }
+		let pasteboard = NSPasteboard.general
+		let saved: [NSPasteboardItem] = (pasteboard.pasteboardItems ?? []).map { item in
+			let copy = NSPasteboardItem()
+			for type in item.types {
+				if let data = item.data(forType: type) { copy.setData(data, forType: type) }
+			}
+			return copy
+		}
+		pasteboard.clearContents()
+		let item = NSPasteboardItem()
+		item.setString(text, forType: .string)
+		item.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
+		item.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.AutoGeneratedType"))
+		pasteboard.writeObjects([item])
+		let ours = pasteboard.changeCount
+		defer {
+			if pasteboard.changeCount == ours {
+				pasteboard.clearContents()
+				if !saved.isEmpty { pasteboard.writeObjects(saved) }
+			}
+		}
+		try body()
+		return pasteboard.changeCount == ours
 	}
 
 	/// Background apps route a pid-targeted mouse event to a window only when it carries

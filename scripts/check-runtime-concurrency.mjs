@@ -65,6 +65,15 @@ const preparedType = prepareAction({ action: "typeText", text: "hello" }, { curr
 assert.equal(preparedType.usesCurrentFocus, true, "focused typing did not preserve click-established focus");
 assert.equal(canRetryInForeground(preparedType, "didnt", false), true, "side-effect-free failed typing should retry in the foreground");
 assert.equal(canRetryInForeground(preparedClick, "unknown", false), false, "ambiguous pointer actions must not be replayed");
+const secondary = prepareAction({ action: "secondaryAction", ref: editor.ref, name: " AXShowMenu " }, { currentFocus: false }, actionEnv);
+assert.deepEqual([secondary.target, secondary.params], [{ ref: "editor" }, { name: "AXShowMenu" }], "secondary actions target the AX element by name");
+assert.throws(() => prepareAction({ action: "secondaryAction", ref: editor.ref }, { currentFocus: false }, actionEnv), /secondaryAction.name/);
+assert.throws(() => prepareAction({ action: "selectText", ref: pictureTarget.ref, text: "x" }, { currentFocus: false }, { ...actionEnv, node: () => pictureTarget }), /coordinate-only/, "AX-only actions refuse coordinate fallback");
+assert.throws(() => prepareAction({ action: "selectText", ref: editor.ref, text: "" }, { currentFocus: false }, actionEnv), /selectText.text/);
+const preparedPaste = prepareAction({ action: "paste", text: "hello" }, { currentFocus: true }, actionEnv);
+assert.equal(preparedPaste.usesCurrentFocus, true, "paste follows click-established focus like typing");
+assert.equal(canRetryInForeground(preparedPaste, "didnt", false), false, "a paste is never replayed: it may have landed without a visible value change");
+assert.equal(canRetryInForeground(secondary, "didnt", false), false, "AX actions are not replayed in the foreground");
 assert.equal(outcomeAfterCheck("unknown", "verified"), "worked", "newly verified evidence did not prove the request worked");
 assert.equal(outcomeAfterCheck("unknown", "preexisting"), "unknown", "preexisting evidence incorrectly proved the request worked");
 assert.equal(outcomeAfterCheck("worked", "failed"), "didnt", "failed verification did not override delivery success");
