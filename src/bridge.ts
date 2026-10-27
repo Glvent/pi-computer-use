@@ -8,7 +8,7 @@ import path from "node:path";
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { canRetryInForeground, outcomeAfterCheck, outcomeAfterObservedValues, prepareAction, type ActionState, type PreparedAction } from "./actions.ts";
 import { cdpClickForContext, cdpDragForContext, cdpEvaluateForContext, cdpKeypressForContext, cdpMouseForContext, cdpNavigateContext, cdpScrollForContext, cdpSnapshotForContext, cdpTabForWindow, cdpTypeFocusedForContext, cdpTypeForContext, disconnectCdp, listCdpPageContexts, type CdpConsoleEntry, type CdpPageSnapshot } from "./cdp.ts";
-import { getComputerUseConfig, isBackgroundOnlyMode, isBrowserUseEnabled, isHeadlessMode, loadComputerUseConfig } from "./config.ts";
+import { blockedAppEntry, getComputerUseConfig, isBackgroundOnlyMode, isBrowserUseEnabled, isHeadlessMode, loadComputerUseConfig } from "./config.ts";
 import { normalizeFindParams } from "./find-params.ts";
 import { noteAfterAct, noteFromLook, noteRegionKeyForRef, renderNote, type WindowNote } from "./note.ts";
 import { controlLine, foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, rankedTextMatch, renderInteractiveControls, restoreOutline, searchOutline, searchOutlineRanked, serializeOutline, serializeOutlineNodeShallow, serializeOutlineSearchMatch, type LookResponse, type Outline, type OutlineChange, type OutlineDiff, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode, type SerializedOutlineSearchMatch } from "./outline.ts";
@@ -170,6 +170,7 @@ interface ListWindowsDetails {
 		pairing?: { confidence: "exact" | "high" | "low"; score: number };
 		zOrder: number;
 		browserUseAllowed: boolean;
+		blocked: boolean;
 		score: number;
 		url?: string;
 	}>;
@@ -312,7 +313,7 @@ const runtimeState: RuntimeState = {
 };
 
 const savedStates = new SavedStates();
-export const testing = { runInOperation: <T>(fn: () => T, state: OperationState = {}): T => savedStates.operations.run(state, fn), buildToolResult, browserObservationResult, waitForViewText, performSearchUi, rootDeltaLines, helperAct };
+export const testing = { runInOperation: <T>(fn: () => T, state: OperationState = {}): T => savedStates.operations.run(state, fn), buildToolResult, browserObservationResult, waitForViewText, performSearchUi, rootDeltaLines, helperAct, assertTargetAllowed };
 let resourceScheduler = new ResourceScheduler();
 
 function operationState(): OperationState {
@@ -550,6 +551,8 @@ function currentTargetOrThrow(): CurrentTarget {
 	if (!target) {
 		throw new Error(MISSING_TARGET_ERROR);
 	}
+	// Saved states outlive config reloads; re-check every use, not only selection.
+	assertTargetAllowed(target);
 	return target;
 }
 
@@ -621,6 +624,7 @@ function formatWindowLine(window: ListWindowsDetails["windows"][number]): string
 		window.isOnscreen ? "onscreen" : undefined,
 		window.isMinimized ? "minimized" : undefined,
 		window.browserUseAllowed ? undefined : "browser_use_disabled",
+		window.blocked ? "blocked" : undefined,
 	]
 		.filter(Boolean)
 		.join(", ");
@@ -634,7 +638,15 @@ async function getFrontmost(signal?: AbortSignal): Promise<FrontmostResult> {
 	return await currentPlatformBackend.getFrontmost(signal);
 }
 
-function assertBrowserUseAllowed(target: { appName: string; bundleId?: string }): void {
+function assertTargetAllowed(target: { appName: string; bundleId?: string }): void {
+	const blocked = blockedAppEntry(target.appName, target.bundleId);
+	if (blocked) {
+		const error = new Error(
+			`'${target.appName}' is blocked by pi-computer-use (blocked_apps entry '${blocked}'): it can expose credentials or run commands. Don't work around this; ask the user to do this step themselves.`,
+		) as Error & { code?: string };
+		error.code = "app_blocked";
+		throw error;
+	}
 	if (!isBrowserUseEnabled() && currentPlatformBackend.isBrowserApp(target.appName, target.bundleId)) {
 		throw new Error(
 			`Browser use is disabled by pi-computer-use config, so '${target.appName}' cannot be controlled. Enable browser_use in ~/.pi/agent/extensions/pi-computer-use.json or .pi/computer-use.json to allow browser windows.`,
@@ -779,7 +791,7 @@ export function nativeWindowRequest(target: Pick<CurrentTarget, "pid" | "windowI
 }
 
 function setCurrentTarget(target: ResolvedTarget): void {
-	assertBrowserUseAllowed(target);
+	assertTargetAllowed(target);
 	const windowRef = target.windowRef ?? storeWindowRefForTarget(target);
 	operationState().currentTarget = {
 		appName: target.appName,
@@ -832,7 +844,7 @@ async function resolveTargetByWindowSelector(selector: RootSelector, signal?: Ab
 			const windows = await listWindows(app.pid, signal);
 			const match = windows.find((window) => window.windowId === numericWindowId);
 			if (match) {
-				assertBrowserUseAllowed(app);
+				assertTargetAllowed(app);
 				const resolved = toResolvedTarget(app, match);
 				setCurrentTarget(resolved);
 				return resolved;
@@ -923,9 +935,7 @@ async function resolveFrontmostTarget(signal?: AbortSignal): Promise<ResolvedTar
 		throw new Error("No frontmost controllable root was found. Open an app window and call observe_ui again.");
 	}
 
-	if (currentPlatformBackend.isBrowserApp(app.appName, app.bundleId)) {
-		assertBrowserUseAllowed(app);
-	}
+	assertTargetAllowed(app);
 
 	let selected = windows.find((window) => window.windowId !== undefined && window.windowId === frontmost.windowId);
 	if (!selected && frontmost.windowTitle) {
@@ -1304,6 +1314,7 @@ function windowDetails(app: HelperApp, window: HelperWindow, config: ReturnType<
 		pairing: platformRootPairing(window),
 		zOrder: window.zOrder,
 		browserUseAllowed: config.browser_use || !currentPlatformBackend.isBrowserApp(app.appName, app.bundleId),
+		blocked: blockedAppEntry(app.appName, app.bundleId) !== undefined,
 		score: scoreWindow(window),
 	};
 }
@@ -1356,6 +1367,7 @@ async function performListWindows(params: FindParams, signal?: AbortSignal): Pro
 			isModal: false,
 			zOrder: Number.MAX_SAFE_INTEGER,
 			browserUseAllowed: true,
+			blocked: false,
 			score: 0,
 			url: page.url,
 		}));

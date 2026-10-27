@@ -9,6 +9,7 @@ export interface ComputerUseConfig {
 	cursor_overlay: boolean;
 	activity_glow: boolean;
 	managed_browser: "helium" | "chrome";
+	blocked_apps: string[];
 }
 
 export interface ComputerUseConfigSource {
@@ -24,6 +25,35 @@ export interface LoadedComputerUseConfig {
 	env: Partial<ComputerUseConfig>;
 }
 
+/** Password managers, credential stores, and terminals: input there can leak secrets or run commands. */
+export const DEFAULT_BLOCKED_APPS: readonly string[] = [
+	"com.apple.keychainaccess",
+	"com.apple.Passwords",
+	"com.1password.1password",
+	"com.bitwarden.desktop",
+	"com.dashlane.dashlanephonefinal",
+	"com.lastpass.LastPass",
+	"com.nordsec.nordpass",
+	"me.proton.pass.electron",
+	"me.proton.pass.catalyst",
+	"org.keepassxc.keepassxc",
+	"com.apple.ScreenContinuity",
+	"com.apple.Terminal",
+	"com.googlecode.iterm2",
+	"dev.warp.Warp-Stable",
+	"net.kovidgoyal.kitty",
+	"org.alacritty",
+	"com.github.wez.wezterm",
+	"com.mitchellh.ghostty",
+	"com.raphaelamorim.rio",
+	"dev.commandline.waveterm",
+	"org.tabby",
+	"com.cmuxterm.app",
+];
+
+/** System authentication prompts are never controllable, whatever `blocked_apps` says. */
+const SYSTEM_SECURITY_APPS: readonly string[] = ["com.apple.SecurityAgent", "com.apple.LocalAuthentication.UIAgent", "com.apple.loginwindow"];
+
 const DEFAULT_CONFIG: ComputerUseConfig = {
 	browser_use: true,
 	headless: false,
@@ -31,6 +61,7 @@ const DEFAULT_CONFIG: ComputerUseConfig = {
 	cursor_overlay: true,
 	activity_glow: false,
 	managed_browser: "chrome",
+	blocked_apps: [...DEFAULT_BLOCKED_APPS],
 };
 
 let activeConfig: ComputerUseConfig = { ...DEFAULT_CONFIG };
@@ -62,6 +93,13 @@ function normalizePartial(raw: unknown): Partial<ComputerUseConfig> {
 	if (activityGlow !== undefined) out.activity_glow = activityGlow;
 	const managedBrowser = (source as any).managed_browser;
 	if (managedBrowser === "helium" || managedBrowser === "chrome") out.managed_browser = managedBrowser;
+	const blockedApps = (source as any).blocked_apps;
+	if (blockedApps !== undefined) {
+		if (!Array.isArray(blockedApps) || !blockedApps.every((entry) => typeof entry === "string")) {
+			throw new Error("blocked_apps must be an array of bundle ids or app names");
+		}
+		out.blocked_apps = blockedApps.map((entry: string) => entry.trim()).filter(Boolean);
+	}
 	return out;
 }
 
@@ -128,10 +166,16 @@ export function isBrowserUseEnabled(): boolean {
 	return activeConfig.browser_use;
 }
 
+/** Returns the `blocked_apps` entry, or system security app, matching the app's bundle id or name. */
+export function blockedAppEntry(appName: string, bundleId?: string): string | undefined {
+	const keys = [appName, bundleId].filter((value): value is string => Boolean(value)).map((value) => value.trim().toLowerCase());
+	return [...SYSTEM_SECURITY_APPS, ...activeConfig.blocked_apps].find((entry) => keys.includes(entry.trim().toLowerCase()));
+}
+
 /*
 PI_DOCS_REFERENCE_BEGIN reference/configuration
 
-Configuration controls browser access, strict accessibility execution, background-only delivery, the macOS agent cursor, and the macOS activity glow.
+Configuration controls browser access, blocked apps, strict accessibility execution, background-only delivery, the macOS agent cursor, and the macOS activity glow.
 
 ## Files
 
@@ -173,6 +217,14 @@ Default: `{{config-default:browser_use}}`
 When `false`, the extension refuses known browser windows. This is useful for projects that should not control browsers.
 
 Known browser families include Safari, Chrome and Chromium-family browsers, Firefox, Arc, Brave, Edge, Vivaldi, and Helium.
+
+### `blocked_apps`
+
+Default: password managers, credential stores, and terminals, by bundle id: Keychain Access, Passwords, 1Password, Bitwarden, Dashlane, LastPass, NordPass, Proton Pass, KeePassXC, iPhone Mirroring, Terminal, iTerm2, Warp, kitty, Alacritty, WezTerm, Ghostty, Rio, Wave, Tabby, and cmux.
+
+Apps that the extension refuses to observe or control. Each entry is a bundle id or an app name, matched without regard to case. Input in these apps can expose credentials or run commands, and background delivery means the user may not see it happen. A blocked target fails with `app_blocked`, and `find_roots` marks its roots `blocked`. The check runs whenever a root is selected and again on every later use of it, so a config change also applies to existing states.
+
+A configured list replaces the default list rather than extending it; copy the defaults from `DEFAULT_BLOCKED_APPS` in `src/config.ts` to keep them. `[]` unblocks everything except the system authentication agents (`com.apple.SecurityAgent`, `com.apple.LocalAuthentication.UIAgent`, `com.apple.loginwindow`), which are always blocked. A value that isn't an array of strings is reported as a config error by `/computer-use`, and that config file is ignored.
 
 ### `managed_browser`
 

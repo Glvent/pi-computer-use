@@ -204,6 +204,15 @@ enum FocusStealVerdict: Equatable {
 	case ignore(String)
 }
 
+/// `CGSSessionScreenIsLocked` is present and true only while the login session is locked.
+func screenIsLocked(session: [String: Any]?) -> Bool {
+	(session?["CGSSessionScreenIsLocked"] as? Bool) == true
+}
+
+/// Commands that read or drive app UI. While the screen is locked, captures show the lock
+/// screen and input would reach apps the user can't see.
+let commandsRequiringUnlockedScreen: Set<String> = ["look", "act", "actBatch", "axReadText", "axWaitFor", "focusedElement", "hitTest", "focusWindow", "setWindowFrame"]
+
 /// Window before an activation in which a hardware modifier change (Cmd-Tab releases
 /// Cmd as it switches) marks the switch as the user's.
 let focusStealModifierWindow: TimeInterval = 0.5
@@ -728,6 +737,9 @@ final class Bridge {
 
 	private func handleRequest(_ request: [String: Any], clientID: UUID?) throws -> Any {
 		let cmd = try stringArg(request, "cmd")
+		if commandsRequiringUnlockedScreen.contains(cmd), screenIsLocked(session: CGSessionCopyCurrentDictionary() as? [String: Any]) {
+			throw BridgeFailure(message: "The Mac is locked. Ask the user to unlock it, then retry.", code: "screen_locked")
+		}
 
 		switch cmd {
 		case "diagnostics":
@@ -4028,6 +4040,10 @@ Without strict headless mode, ref-based work normally starts in the background a
 AppKit drops pid-targeted clicks for windows that aren't key, and Chromium drops pid-targeted clicks and keystrokes too. Before pid-targeted input, the helper posts two WindowServer event records to the target process alone with the private SkyLight function `SLPSPostEventRecordTo`: "application activated" and "make key window" for the observed window. The target then treats that window as key while the user's frontmost app keeps real keyboard focus. Mouse events for a known window are built with [`NSEvent.mouseEvent`](https://developer.apple.com/documentation/appkit/nsevent/mouseevent(with:location:modifierflags:timestamp:windownumber:context:eventnumber:clickcount:pressure:)) carrying the window number and a window-relative location; screen-coordinate CGEvents posted to a background pid are ignored.
 
 Synthetic focus is skipped when the target is the frontmost app, since making another of its windows key would redirect the user's typing, and for `ax_only`. One helper serves every Pi session, so there is a single focus target, and focusing plus the action's input run under one lease that other connections' actions and releases wait for. Focus is released with an "application deactivated" record when the last registered agent run ends or its connection closes, or 10 seconds after the last focus when no run is registered, unless the user has brought the target forward since. The function is resolved at runtime; when it is missing, `performed.syntheticFocus` reports `synthetic_focus_unavailable` and delivery continues without it.
+
+## Locked screen
+
+While the login session is locked, `CGSessionCopyCurrentDictionary` reports `CGSSessionScreenIsLocked`, and the helper refuses commands that read or drive app UI (`look`, `act`, `actBatch`, `axReadText`, `axWaitFor`, `focusedElement`, `hitTest`, `focusWindow`, `setWindowFrame`) with `screen_locked`. Captures would show only the lock screen, and synthesized input would reach apps the user can't see. App and root discovery still work. The helper never unlocks the screen.
 
 ## Focus-steal guard
 

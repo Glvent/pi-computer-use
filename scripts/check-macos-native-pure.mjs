@@ -53,6 +53,11 @@ check(release[0x08] == 0x0d && release[0x8a] == 0x02 && release[0x3c] == 7, "rel
 let relative = windowRelativeEventLocation(screenPoint: CGPoint(x: 192, y: 355), windowOrigin: CGPoint(x: 22, y: 53), mainDisplayHeight: 884)
 check(relative.x == 170 && relative.y == 582, "window event location flips against the main display so cgEvent yields (170, 302)")
 
+check(screenIsLocked(session: ["CGSSessionScreenIsLocked": true]), "locked session is detected")
+check(!screenIsLocked(session: ["kCGSSessionOnConsoleKey": true]), "unlocked session omits the lock key")
+check(!screenIsLocked(session: nil), "missing session dictionary isn't treated as locked")
+check(["look", "act", "actBatch", "axReadText"].allSatisfy(commandsRequiringUnlockedScreen.contains) && !commandsRequiringUnlockedScreen.contains("diagnostics") && !commandsRequiringUnlockedScreen.contains("setActivityGlow"), "UI commands need an unlocked screen; lifecycle commands don't")
+
 let armed = FocusGuardArm(targetPid: 10, userPid: 20, userWindowId: 5, armedAt: 100, until: nil)
 var tailing = armed
 tailing.until = 102
