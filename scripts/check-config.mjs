@@ -35,6 +35,10 @@ try {
 	assert.equal(blockedAppEntry("Terminal", "com.apple.Terminal"), undefined, "an empty list unblocks everything but system security apps");
 	assert.equal(blockedAppEntry("loginwindow", "com.apple.loginwindow"), "com.apple.loginwindow");
 
+	assert.equal(loadComputerUseConfig(project).config.pip_view, false, "the PIP view is off by default");
+	writeProjectConfig({ pip_view: true });
+	assert.equal(loadComputerUseConfig(project).config.pip_view, true, "pip_view can be enabled");
+
 	writeProjectConfig({ blocked_apps: "Terminal" });
 	const loaded = loadComputerUseConfig(project);
 	assert.match(loaded.sources.at(-1).error ?? "", /blocked_apps must be an array/, "an invalid list is reported, not ignored");

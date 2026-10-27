@@ -384,7 +384,7 @@ class MacosActivityGlowConnection {
 			socket.on("data", onData);
 			socket.once("close", onClose);
 			const config = getComputerUseConfig();
-			socket.write(`${JSON.stringify({ id, cmd: "setActivityGlow", active, glow: config.activity_glow, cursor: config.cursor_overlay })}\n`);
+			socket.write(`${JSON.stringify({ id, cmd: "setActivityGlow", active, glow: config.activity_glow, cursor: config.cursor_overlay, pip: config.pip_view })}\n`);
 		});
 	}
 }

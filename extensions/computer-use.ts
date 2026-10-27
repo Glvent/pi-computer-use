@@ -186,6 +186,7 @@ function formatConfigStatus(): string {
 		`background_only: ${loaded.config.background_only ? "enabled" : "disabled"}`,
 		`cursor_overlay: ${loaded.config.cursor_overlay ? "enabled" : "disabled"}`,
 		`activity_glow: ${loaded.config.activity_glow ? "enabled" : "disabled"}`,
+		`pip_view: ${loaded.config.pip_view ? "enabled" : "disabled"}`,
 		`blocked_apps: ${loaded.config.blocked_apps.length ? loaded.config.blocked_apps.join(", ") : "none"}`,
 		"",
 		"Sources:",

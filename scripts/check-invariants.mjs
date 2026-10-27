@@ -314,6 +314,7 @@ check("INV-8 swift typecheck", () => {
 		"native/macos/agent_cursor_motion.swift",
 		"native/macos/bridge.swift",
 		"native/macos/focus_guard.swift",
+		"native/macos/pip_view.swift",
 		"native/macos/synthetic_focus.swift",
 	], { cwd: root, stdio: "pipe" });
 });

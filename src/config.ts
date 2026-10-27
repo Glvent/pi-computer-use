@@ -8,6 +8,7 @@ export interface ComputerUseConfig {
 	background_only: boolean;
 	cursor_overlay: boolean;
 	activity_glow: boolean;
+	pip_view: boolean;
 	managed_browser: "helium" | "chrome";
 	blocked_apps: string[];
 }
@@ -60,6 +61,7 @@ const DEFAULT_CONFIG: ComputerUseConfig = {
 	background_only: false,
 	cursor_overlay: true,
 	activity_glow: false,
+	pip_view: false,
 	managed_browser: "chrome",
 	blocked_apps: [...DEFAULT_BLOCKED_APPS],
 };
@@ -86,11 +88,13 @@ function normalizePartial(raw: unknown): Partial<ComputerUseConfig> {
 	const backgroundOnly = parseBoolean((source as any).background_only);
 	const cursorOverlay = parseBoolean((source as any).cursor_overlay);
 	const activityGlow = parseBoolean((source as any).activity_glow);
+	const pipView = parseBoolean((source as any).pip_view);
 	if (browserUse !== undefined) out.browser_use = browserUse;
 	if (headless !== undefined) out.headless = headless;
 	if (backgroundOnly !== undefined) out.background_only = backgroundOnly;
 	if (cursorOverlay !== undefined) out.cursor_overlay = cursorOverlay;
 	if (activityGlow !== undefined) out.activity_glow = activityGlow;
+	if (pipView !== undefined) out.pip_view = pipView;
 	const managedBrowser = (source as any).managed_browser;
 	if (managedBrowser === "helium" || managedBrowser === "chrome") out.managed_browser = managedBrowser;
 	const blockedApps = (source as any).blocked_apps;
@@ -120,11 +124,13 @@ function readEnv(): Partial<ComputerUseConfig> {
 	const backgroundOnly = parseBoolean(process.env.PI_COMPUTER_USE_BACKGROUND_ONLY);
 	const cursorOverlay = parseBoolean(process.env.PI_COMPUTER_USE_CURSOR_OVERLAY);
 	const activityGlow = parseBoolean(process.env.PI_COMPUTER_USE_ACTIVITY_GLOW);
+	const pipView = parseBoolean(process.env.PI_COMPUTER_USE_PIP_VIEW);
 	if (browserUse !== undefined) out.browser_use = browserUse;
 	if (headless !== undefined) out.headless = headless;
 	if (backgroundOnly !== undefined) out.background_only = backgroundOnly;
 	if (cursorOverlay !== undefined) out.cursor_overlay = cursorOverlay;
 	if (activityGlow !== undefined) out.activity_glow = activityGlow;
+	if (pipView !== undefined) out.pip_view = pipView;
 	const managedBrowser = process.env.PI_COMPUTER_USE_MANAGED_BROWSER;
 	if (managedBrowser === "helium" || managedBrowser === "chrome") out.managed_browser = managedBrowser;
 	return out;
@@ -175,7 +181,7 @@ export function blockedAppEntry(appName: string, bundleId?: string): string | un
 /*
 PI_DOCS_REFERENCE_BEGIN reference/configuration
 
-Configuration controls browser access, blocked apps, strict accessibility execution, background-only delivery, the macOS agent cursor, and the macOS activity glow.
+Configuration controls browser access, blocked apps, strict accessibility execution, background-only delivery, the macOS agent cursor, the macOS activity glow, and the macOS picture-in-picture view.
 
 ## Files
 
@@ -202,7 +208,8 @@ Example:
   "headless": false,
   "background_only": false,
   "cursor_overlay": true,
-  "activity_glow": true
+  "activity_glow": true,
+  "pip_view": false
 }
 ```
 
@@ -258,6 +265,14 @@ When `true`, macOS displays a click-through pulsing border on every screen while
 
 The activity glow appears in user screen recordings, but never in the agent's own observations: helper captures always target a single window, so screen-edge overlays are not included. The glow is excluded from accessibility discovery. Other platforms ignore this setting, and `headless: true` always suppresses it ([macOS reference](./platforms/macos/implementation.mdx#activity-glow)).
 
+### `pip_view`
+
+Default: `{{config-default:pip_view}}`
+
+When `true`, macOS shows a small floating picture-in-picture view of the window the agent last observed while a Pi agent run is active. It shows windows behind other windows or on another Space, which background delivery leaves where they are; minimized windows can't be captured and keep their last frame. The view hides while the target app is frontmost, since its window is then already in view, and 1.5 seconds after the run ends.
+
+The view is read-only: it never takes focus or forwards input. Drag it to move it; it keeps the chosen corner for later targets. It streams the window at up to 8 frames per second through ScreenCaptureKit, which costs some CPU while visible. On recent macOS versions, a continuous capture can make the system ask whether pi-computer-use may keep accessing the screen while bypassing the private window picker; the view needs that allowed. It's excluded from screen capture, including the agent's own observations, and from accessibility discovery. Other platforms ignore this setting, and `headless: true` always suppresses it ([macOS reference](./platforms/macos/implementation.mdx#picture-in-picture-view)).
+
 ## Environment variables
 
 ```bash
@@ -275,6 +290,8 @@ PI_COMPUTER_USE_CURSOR_OVERLAY=0
 PI_COMPUTER_USE_CURSOR_OVERLAY=1
 PI_COMPUTER_USE_ACTIVITY_GLOW=0
 PI_COMPUTER_USE_ACTIVITY_GLOW=1
+PI_COMPUTER_USE_PIP_VIEW=0
+PI_COMPUTER_USE_PIP_VIEW=1
 PI_COMPUTER_USE_DELIVERY_POLICY=default
 PI_COMPUTER_USE_DELIVERY_POLICY=foreground
 PI_COMPUTER_USE_CDP_PORT=9222

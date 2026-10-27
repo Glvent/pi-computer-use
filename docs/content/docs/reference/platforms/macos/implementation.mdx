@@ -85,6 +85,12 @@ The current overlay is main-display-only because its frame is created from `NSSc
 
 `activity_glow` defaults to `false`. When `headless` is `false`, the extension sends `setActivityGlow` over a persistent helper connection when a computer-use tool starts and clears it when the agent run ends, whether or not the glow is enabled, because the run boundary also releases synthetic focus ([computer-use.ts](https://github.com/injaneity/pi-computer-use/blob/main/extensions/computer-use.ts#L207)). The helper's `ActivityGlowController` tracks active connections and shows the glow while any is active; a closed connection removes its state ([bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L485), [bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L634), [activity_glow.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/activity_glow.swift#L74)). It creates one borderless window per `NSScreen`, rebuilt when screen parameters change. Each window ignores mouse events, is excluded from Accessibility, and sits at the screen-saver level ([activity_glow.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/activity_glow.swift#L130)).
 
+## Picture-in-picture view
+
+`pip_view` defaults to `false`. The extension passes it as `pip` in the same `setActivityGlow` run message, and the helper's `PipViewController` tracks active connections like the glow ([pip_view.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/pip_view.swift)). Every stored look with a window id makes that window the PIP target. While a run is active, the controller streams the target with an `SCStream` over an `SCContentFilter(desktopIndependentWindow:)`, at most 8 frames per second, scaled to the panel's size, and shows complete frames as the panel layer's `IOSurface` contents ([Apple: `SCStream`](https://developer.apple.com/documentation/screencapturekit/scstream)). A desktop-independent window filter captures the window's own content, so occluding windows and other Spaces don't matter; a minimized window delivers no new frames.
+
+The panel is a borderless, non-activating `NSPanel` at the floating level that cannot become key or main, joins all Spaces, is excluded from window sharing (`sharingType = .none`) and from Accessibility, and is movable by its background. It is ordered out while the target app is frontmost, and the stream stops 1.5 seconds after the last run ends or when the window closes. The next run starts with no target until its first look.
+
 ## Current limits
 
 - Accessibility completeness and supported actions depend on what the target app exposes; sparse or web-backed trees can require image evidence or foreground event delivery.
@@ -92,6 +98,7 @@ The current overlay is main-display-only because its frame is created from `NSSc
 - Raw coordinate targets require an image-bearing look; outline-only menu roots cannot be coordinate targets.
 - ScreenCaptureKit readiness, capture, and the command-line screenshot fallback are separate checks, so one successful check does not guarantee every later window capture.
 - The visual agent cursor draws on one display at a time, the one containing the grounded point.
+- The picture-in-picture view is read-only and shows one window, the last one observed.
 - Strict headless mode rejects actions that need synthesized pointer or keyboard input, including every `typeText` and `keypress`.
 
 <details className="reference-provenance">

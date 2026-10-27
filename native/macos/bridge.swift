@@ -236,6 +236,101 @@ func focusStealVerdict(arm: FocusGuardArm, frontmostPid: Int32?, now: TimeInterv
 	if let lastUserModifierChangeAt, now - lastUserModifierChangeAt <= focusStealModifierWindow { return .ignore("user_input") }
 	return .restore
 }
+
+/// PIP panel size: the window's aspect ratio within `maxSize`, never scaled up.
+func pipPanelSize(windowSize: CGSize, maxSize: CGSize) -> CGSize {
+	guard windowSize.width > 0, windowSize.height > 0 else { return maxSize }
+	let scale = min(1, maxSize.width / windowSize.width, maxSize.height / windowSize.height)
+	return CGSize(width: max(1, (windowSize.width * scale).rounded()), height: max(1, (windowSize.height * scale).rounded()))
+}
+
+/// Places the panel with its bottom-right corner at `anchor`, kept inside `visibleFrame`, so a
+/// size change for a new target grows the panel away from the screen corner the user chose.
+func pipPanelFrame(size: CGSize, anchor: CGPoint, visibleFrame: CGRect) -> CGRect {
+	let x = min(max(anchor.x - size.width, visibleFrame.minX), visibleFrame.maxX - size.width)
+	let y = min(max(anchor.y, visibleFrame.minY), visibleFrame.maxY - size.height)
+	return CGRect(x: x, y: y, width: size.width, height: size.height)
+}
+
+/// Bounding box for the PIP card on a display: the user's saved size, but never more than
+/// 90% of the display's visible area, so a size saved on a large display still fits a smaller one.
+func pipCardMaxSize(saved: CGSize, visibleSize: CGSize) -> CGSize {
+	CGSize(width: max(1, min(saved.width, visibleSize.width * 0.9)), height: max(1, min(saved.height, visibleSize.height * 0.9)))
+}
+
+/// Card edges a PIP resize drag moves.
+struct PipResizeEdges: OptionSet {
+	let rawValue: Int
+	static let left = PipResizeEdges(rawValue: 1)
+	static let right = PipResizeEdges(rawValue: 2)
+	static let top = PipResizeEdges(rawValue: 4)
+	static let bottom = PipResizeEdges(rawValue: 8)
+}
+
+/// Edges under `point` near the card's border, within `band` of an edge; corners get a larger
+/// `corner` zone so they're easy to grab. Empty when the point isn't on the border.
+func pipResizeEdges(at point: CGPoint, card: CGRect, band: Double, corner: Double) -> PipResizeEdges {
+	guard card.width > 0, card.height > 0, card.insetBy(dx: -band, dy: -band).contains(point) else { return [] }
+	var edges: PipResizeEdges = []
+	let nearLeft = point.x <= card.minX + band, nearRight = point.x >= card.maxX - band
+	let nearBottom = point.y <= card.minY + band, nearTop = point.y >= card.maxY - band
+	if nearLeft || nearRight {
+		edges.insert(nearLeft ? .left : .right)
+		if point.y <= card.minY + corner { edges.insert(.bottom) } else if point.y >= card.maxY - corner { edges.insert(.top) }
+	}
+	if nearBottom || nearTop {
+		edges.insert(nearBottom ? .bottom : .top)
+		if point.x <= card.minX + corner { edges.insert(.left) } else if point.x >= card.maxX - corner { edges.insert(.right) }
+	}
+	return edges
+}
+
+/// Card frame after dragging `edges` by `delta` from `start`. Keeps the aspect ratio and the
+/// opposite edges fixed, and clamps the width so the card stays within `minWidth` and `maxSize`.
+func pipResizedCardFrame(start: CGRect, delta: CGVector, edges: PipResizeEdges, minWidth: Double, maxSize: CGSize) -> CGRect {
+	guard start.width > 0, start.height > 0, !edges.isEmpty else { return start }
+	let aspect = start.width / start.height
+	var candidates: [Double] = []
+	if edges.contains(.right) { candidates.append(start.width + delta.dx) }
+	if edges.contains(.left) { candidates.append(start.width - delta.dx) }
+	if edges.contains(.top) { candidates.append((start.height + delta.dy) * aspect) }
+	if edges.contains(.bottom) { candidates.append((start.height - delta.dy) * aspect) }
+	// A corner follows whichever axis the pointer moved the card more along.
+	var width = candidates.max { abs($0 - start.width) < abs($1 - start.width) } ?? start.width
+	let maxWidth = max(1, min(maxSize.width, maxSize.height * aspect))
+	width = min(max(width, min(minWidth, maxWidth)), maxWidth)
+	let height = width / aspect
+	let x = edges.contains(.left) ? start.maxX - width : start.minX
+	let y = edges.contains(.bottom) ? start.maxY - height : start.minY
+	return CGRect(x: x, y: y, width: width, height: height)
+}
+
+/// Glow brightness at `distance` points outside the PIP card edge: a bright core plus a long
+/// soft haze. It fades to exactly 0 at `padding`, the panel's transparent margin, so the
+/// window edge never clips the glow into a visible line.
+func pipGlowIntensity(distance: Double, padding: Double) -> Double {
+	let d = max(0, distance)
+	guard padding > 0, d < padding else { return 0 }
+	let core = 0.55 * exp(-(d * d) / 24)
+	let haze = 0.42 * exp(-d / 20)
+	// Smoothstep over the outer 45% of the margin; the inner part keeps its natural falloff.
+	let t = min(1, max(0, (d / padding - 0.55) / 0.45))
+	let fade = 1 - t * t * (3 - 2 * t)
+	return min(1, (core + haze) * fade)
+}
+
+/// Signed distance from `point` to a rounded rect; negative inside, 0 on the edge.
+func pipRoundedRectDistance(point: CGPoint, rect: CGRect, radius: Double) -> Double {
+	let qx = abs(point.x - rect.midX) - (rect.width / 2 - radius)
+	let qy = abs(point.y - rect.midY) - (rect.height / 2 - radius)
+	return hypot(max(qx, 0), max(qy, 0)) + min(max(qx, qy), 0) - radius
+}
+
+/// A frontmost target is already in view, so the PIP only shows while it isn't.
+func pipShouldShow(runActive: Bool, targetPid: Int32?, frontmostPid: Int32?) -> Bool {
+	guard runActive, let targetPid else { return false }
+	return targetPid != frontmostPid
+}
 // END PURE
 
 private struct LookRecord {
@@ -511,6 +606,7 @@ final class Bridge {
 	private let refStore = AXRefStore()
 	private let activityGlow = ActivityGlowController()
 	private let agentCursorHold = AgentCursorHoldController()
+	private let pipView = PipViewController()
 	private let syntheticFocus = SyntheticFocusController()
 	private let focusGuard = FocusGuard()
 	private let inputSuppressionGuard = InputSuppressionGuard()
@@ -607,6 +703,7 @@ final class Bridge {
 		defer {
 			activityGlow.disconnect(clientID)
 			agentCursorHold.disconnect(clientID)
+			pipView.disconnect(clientID)
 			syntheticFocus.setRunActive(false, for: clientID)
 		}
 		let clientInput = FileHandle(fileDescriptor: client, closeOnDealloc: true)
@@ -763,7 +860,10 @@ final class Bridge {
 				throw BridgeFailure(message: "Activity glow requires a connected client and boolean 'active' value", code: "invalid_args")
 			}
 			activityGlow.setActive(active && (boolArg(request, "glow") ?? true), for: clientID)
-			if supportsAgentCursor { agentCursorHold.setActive(active && (boolArg(request, "cursor") ?? false), for: clientID) }
+			if supportsAgentCursor {
+				agentCursorHold.setActive(active && (boolArg(request, "cursor") ?? false), for: clientID)
+				pipView.setActive(active && (boolArg(request, "pip") ?? false), for: clientID)
+			}
 			syntheticFocus.setRunActive(active, for: clientID)
 			return ["active": active]
 		case "shutdown":
@@ -924,6 +1024,7 @@ final class Bridge {
 			"accessibility": permissions["accessibility"] ?? false,
 			"screenRecording": permissions["screenRecording"] ?? false,
 			"activityGlowActive": activityGlow.isActive,
+			"pipViewActive": pipView.isActive,
 			"agentCursorHeld": agentCursorHold.isHeld,
 			"syntheticFocusAvailable": syntheticFocus.isAvailable,
 			"recentCompletedRequestIds": completedRequestIds(),
@@ -1621,6 +1722,7 @@ final class Bridge {
 		lookRecordLock.lock()
 		defer { lookRecordLock.unlock() }
 		lookRecords[record.lookId] = record
+		if record.windowId > 0 { pipView.setTarget(windowId: CGWindowID(record.windowId)) }
 		lookRecordOrder.append(record.lookId)
 		while lookRecordOrder.count > 8 {
 			let oldest = lookRecordOrder.removeFirst()
@@ -4302,6 +4404,12 @@ The current overlay is main-display-only because its frame is created from `NSSc
 
 `activity_glow` defaults to `false`. When `headless` is `false`, the extension sends `setActivityGlow` over a persistent helper connection when a computer-use tool starts and clears it when the agent run ends, whether or not the glow is enabled, because the run boundary also releases synthetic focus ([computer-use.ts](https://github.com/injaneity/pi-computer-use/blob/main/extensions/computer-use.ts#L207)). The helper's `ActivityGlowController` tracks active connections and shows the glow while any is active; a closed connection removes its state ([bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L485), [bridge.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L634), [activity_glow.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/activity_glow.swift#L74)). It creates one borderless window per `NSScreen`, rebuilt when screen parameters change. Each window ignores mouse events, is excluded from Accessibility, and sits at the screen-saver level ([activity_glow.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/activity_glow.swift#L130)).
 
+## Picture-in-picture view
+
+`pip_view` defaults to `false`. The extension passes it as `pip` in the same `setActivityGlow` run message, and the helper's `PipViewController` tracks active connections like the glow ([pip_view.swift](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/pip_view.swift)). Every stored look with a window id makes that window the PIP target. While a run is active, the controller streams the target with an `SCStream` over an `SCContentFilter(desktopIndependentWindow:)`, at most 8 frames per second, scaled to the panel's size, and shows complete frames as the panel layer's `IOSurface` contents ([Apple: `SCStream`](https://developer.apple.com/documentation/screencapturekit/scstream)). A desktop-independent window filter captures the window's own content, so occluding windows and other Spaces don't matter; a minimized window delivers no new frames.
+
+The panel is a borderless, non-activating `NSPanel` at the floating level that cannot become key or main, joins all Spaces, is excluded from window sharing (`sharingType = .none`) and from Accessibility, and is movable by its background. It is ordered out while the target app is frontmost, and the stream stops 1.5 seconds after the last run ends or when the window closes. The next run starts with no target until its first look.
+
 ## Current limits
 
 - Accessibility completeness and supported actions depend on what the target app exposes; sparse or web-backed trees can require image evidence or foreground event delivery.
@@ -4309,6 +4417,7 @@ The current overlay is main-display-only because its frame is created from `NSSc
 - Raw coordinate targets require an image-bearing look; outline-only menu roots cannot be coordinate targets.
 - ScreenCaptureKit readiness, capture, and the command-line screenshot fallback are separate checks, so one successful check does not guarantee every later window capture.
 - The visual agent cursor draws on one display at a time, the one containing the grounded point.
+- The picture-in-picture view is read-only and shows one window, the last one observed.
 - Strict headless mode rejects actions that need synthesized pointer or keyboard input, including every `typeText` and `keypress`.
 PI_DOCS_REFERENCE_END
 */

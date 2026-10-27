@@ -13,6 +13,7 @@ const macosSourcePaths = [
 	"agent_cursor_motion.swift",
 	"bridge.swift",
 	"focus_guard.swift",
+	"pip_view.swift",
 	"synthetic_focus.swift",
 ].map((file) => path.join(rootDir, "native", "macos", file));
 const windowsCrateDir = path.join(rootDir, "native", "windows", "bridge-rs");
