@@ -13,6 +13,7 @@ import { normalizeFindParams } from "./find-params.ts";
 import { noteAfterAct, noteFromLook, noteRegionKeyForRef, renderNote, type WindowNote } from "./note.ts";
 import { controlLine, foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, rankedTextMatch, renderInteractiveControls, restoreOutline, searchOutline, searchOutlineRanked, serializeOutline, serializeOutlineNodeShallow, serializeOutlineSearchMatch, type LookResponse, type Outline, type OutlineChange, type OutlineDiff, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode, type SerializedOutlineSearchMatch } from "./outline.ts";
 import { applyOutputEnvelope, boundToolError, clearStoredOutputs, readStoredOutput, UI_TEXT_PAGE_CHARS } from "./output.ts";
+import { loadOutline, saveOutline } from "./outline-store.ts";
 import { AGENT_TOOL_NAMES, type ActParams, type EvaluateBrowserParams, type ExpandUiParams, type ImageMode, type InspectUiParams, type LaunchBrowserParams, type FindParams, type NavigateBrowserParams, type ObserveDetail, type ObserveParams, type ObserveTargetParams, type ReadTextParams, type RootSelector, type SearchUiParams, type UiAction, type WaitForParams } from "./contract.ts";
 import { toFiniteNumber } from "./platform/coerce.ts";
 import { currentPlatformBackend } from "./platform/index.ts";
@@ -2364,6 +2365,17 @@ export const executeNavigateBrowser = makeToolExecutor("navigate_browser", perfo
 export const executeEvaluateBrowser = makeToolExecutor("evaluate_browser", performEvaluateBrowser);
 export const executeLaunchBrowser = makeToolExecutor("launch_browser", performLaunchBrowser);
 
+/**
+ * Details as they should be saved in the session. The full outline is dropped: a desktop one goes to
+ * the outline store for `reconstructStateFromBranch`, and a browser one is never restored.
+ */
+export function detailsForSession(details: unknown): unknown {
+	if (!details || typeof details !== "object" || !("outline" in details)) return details;
+	const { outline, ...rest } = details as { outline?: SerializedOutline; target?: unknown; capture?: { stateId?: unknown } };
+	if (outline && rest.target && typeof rest.capture?.stateId === "string") saveOutline(rest.capture.stateId, outline);
+	return rest;
+}
+
 export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 	savedStates.clear();
 	clearStoredOutputs();
@@ -2438,7 +2450,9 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 			scaleFactor: Math.max(1, toFiniteNumber(details.capture.scaleFactor, 1)),
 			timestamp: Number.isFinite(details.capture.timestamp) ? details.capture.timestamp : Date.now(),
 		};
-		if (details.outline?.root && typeof details.outline.lookId === "string") {
+		// Sessions saved before the outline store kept the outline in the details.
+		const outline = details.outline ?? loadOutline(capture.stateId);
+		if (outline?.root && typeof outline.lookId === "string") {
 			const epoch = 0;
 			resourceScheduler.restoreEpoch(resourceKey, epoch);
 			savedStates.set({
@@ -2449,9 +2463,9 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 					kind: "desktop",
 					target,
 					capture,
-					outline: details.outline,
+					outline,
 					look: {
-				lookId: details.outline.lookId,
+				lookId: outline.lookId,
 				capturedAt: details.capture.timestamp / 1000,
 				window: {
 					windowId: Math.trunc(details.target.windowId),

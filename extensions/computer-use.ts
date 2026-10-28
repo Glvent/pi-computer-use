@@ -13,6 +13,7 @@ import {
 	executeReadText,
 	executeSearchUi,
 	executeWaitFor,
+	detailsForSession,
 	reconstructStateFromBranch,
 	setComputerUseActivity,
 	shutdownComputerUseSession,
@@ -213,6 +214,12 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 		reconstructStateFromBranch(ctx);
 		if (!ctx.hasUI) return;
 		try { await ensureComputerUseSetup(ctx); } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning"); }
+	});
+
+	pi.on("tool_result", async (event) => {
+		if (!COMPUTER_USE_TOOL_NAMES.has(event.toolName)) return;
+		const details = detailsForSession(event.details);
+		return details === event.details ? undefined : { details };
 	});
 
 	pi.on("tool_execution_start", async (event) => {
