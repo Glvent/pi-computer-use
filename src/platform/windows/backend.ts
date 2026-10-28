@@ -20,6 +20,7 @@ function classifyBrowser(appName: string): false | "chrome" | "edge" | "brave" |
 		case "brave-browser":
 			return "brave";
 		case "firefox":
+		case "zen":
 			return "firefox";
 		case "vivaldi":
 			return "vivaldi";

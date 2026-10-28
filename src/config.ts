@@ -223,7 +223,7 @@ Default: `{{config-default:browser_use}}`
 
 When `false`, the extension refuses known browser windows. This is useful for projects that should not control browsers.
 
-Known browser families include Safari, Chrome and Chromium-family browsers, Firefox, Arc, Brave, Edge, Vivaldi, and Helium.
+Known browser families include Safari, Chrome and Chromium-family browsers, Firefox and Firefox-family browsers such as Zen, Arc, Brave, Edge, Vivaldi, and Helium.
 
 ### `blocked_apps`
 

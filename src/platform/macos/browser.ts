@@ -12,6 +12,7 @@ const BROWSER_BUNDLE_IDS = new Set([
 	"com.vivaldi.Vivaldi",
 	"net.imput.helium",
 	"org.mozilla.firefox",
+	"app.zen-browser.zen",
 ]);
 const BROWSER_APP_NAMES = new Set([
 	"safari",
@@ -26,6 +27,7 @@ const BROWSER_APP_NAMES = new Set([
 	"vivaldi",
 	"helium",
 	"firefox",
+	"zen",
 ]);
 const CHROME_FAMILY_BUNDLE_IDS = new Set([
 	"com.google.Chrome",

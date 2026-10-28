@@ -43,6 +43,9 @@ function classifyBrowser(appName: string): false | "chromium" | "firefox" {
 			return "chromium";
 		case "firefox":
 		case "firefox-esr":
+		case "zen":
+		case "zen-bin":
+		case "zen-browser":
 			return "firefox";
 		default:
 			return false;
