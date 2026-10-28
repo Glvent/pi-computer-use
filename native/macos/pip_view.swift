@@ -21,6 +21,12 @@ let pipCardScreenInset: CGFloat = 20
 
 private final class PipCardView: NSView {
 	override var mouseDownCanMoveWindow: Bool { true }
+	override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+	// The full-bounds PipResizeView (mouseDownCanMoveWindow == false) removes the whole
+	// window from AppKit's background-drag region, so start the move explicitly.
+	override func mouseDown(with event: NSEvent) {
+		window?.performDrag(with: event)
+	}
 }
 
 /// Transparent overlay that turns drags on the card's border into resizes. Everywhere else
